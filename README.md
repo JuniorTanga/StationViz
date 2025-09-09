@@ -16,13 +16,14 @@
 ## Architecture
 
 The project is structured into modular components for clear separation of concerns:
+```bash
 StationViz/
 ├── core/ # Backend libraries (C++)
 │ ├── scl/ # SCL parsing & data model
 │ ├── sld/ # Single-Line Diagram generation
 │ └── network/ # IEC 61850 communication (MMS, GOOSE)
 └── ui/ # Frontend application (Qt Quick / QML)
-
+```
 
 ## Dependencies
 
