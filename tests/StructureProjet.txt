@@ -1,0 +1,16 @@
+StationViz/
+	core/
+		scl/
+			models/
+			pugixml/
+		sld/
+		network/
+	ui/
+	
+La structure actuelle de dossier du projet créer dans QtCreator, le fichier main.cpp et le fichier CMakelist principal se trouvent à la racine StationViz/
+Chaque sous dossier a son fichier CMakelist pour pouvoir compiler chaque modules séparemment.
+Le dossier core est destiné à contenir tous le code backend (C++)
+Le dossier ui est pour le frontend (les modules qml)
+Le dossier scl/ est pour le module de parsing de fichier scl. j'utilise la bibliothèque pugixml
+Le dossier sld/ est pour le module relatif à l'affichage single line diagram
+Le dossier network/ est relatif à la communication iec61850.

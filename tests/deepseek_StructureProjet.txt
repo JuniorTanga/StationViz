@@ -1,0 +1,96 @@
+StationViz/
+├── CMakeLists.txt                    # Configuration principale du projet
+├── CMakePresets.json                 # (Optionnel) Pour pré-configurer les builds
+├── main.cpp                         # Point d'entrée de l'application
+├── README.md                        # Documentation du projet
+│
+├── core/                            # Toutes les bibliothèques C++ (Backend)
+│   ├── CMakeLists.txt               # Build du module core, lie tous les sous-modules
+│   │
+│   ├── scl/                         # Module de parsing SCL
+│   │   ├── CMakeLists.txt
+│   │   ├── include/
+│   │   │   └── stationviz/
+│   │   │       └── scl/
+│   │   │           ├── SclManager.h         # Façade principale du module SCL
+│   │   │           ├── SclParser.h          # Le parseur principal (utilise pugixml)
+│   │   │           ├── types/               # Toutes les classes du modèle de données
+│   │   │           │   ├── Substation.h
+│   │   │           │   ├── VoltageLevel.h
+│   │   │           │   ├── Bay.h
+│   │   │           │   ├── Ied.h
+│   │   │           │   ├── LogicalDevice.h
+│   │   │           │   ├── LogicalNode.h
+│   │   │           │   ├── DataObject.h
+│   │   │           │   ├── DataAttribute.h
+│   │   │           │   └── ...
+│   │   │           └── private/              # Headers internes au module si besoin
+│   │   │               └── SclParser_p.h
+│   │   └── src/
+│   │       ├── SclManager.cpp
+│   │       ├── SclParser.cpp
+│   │       └── types/
+│   │           ├── Substation.cpp
+│   │           ├── Ied.cpp
+│   │           └── ...
+│   │
+│   ├── sld/                         # Module de génération du Single Line Diagram
+│   │   ├── CMakeLists.txt
+│   │   ├── include/stationviz/sld/
+│   │   │   ├── SldBuilder.h         # Transforme le modèle SCL en modèle graphique
+│   │   │   ├── SldGraphModel.h      # Modèle (QAbstractItemModel) pour QML
+│   │   │   ├── SldNode.h            # Représente un nœud électrique (ConnectivityNode)
+│   │   │   └── SldComponent.h       # Représente un équipement (XCBR, XSWI...)
+│   │   └── src/
+│   │       ├── SldBuilder.cpp
+│   │       ├── SldGraphModel.cpp
+│   │       └── ...
+│   │
+│   ├── network/                     # Module de communication IEC 61850
+│   │   ├── CMakeLists.txt
+│   │   ├── include/stationviz/network/
+│   │   │   ├── Iec61850Client.h     # Wrapper pour la communication MMS (libIEC61850)
+│   │   │   ├── GooseSubscriber.h    # Gestion des messages GOOSE
+│   │   │   ├── DataValueCache.h     # Cache central des valeurs des IEDs
+│   │   │   └── CommandManager.h     # Envoi des commandes de contrôle
+│   │   └── src/
+│   │       ├── Iec61850Client.cpp
+│   │       ├── DataValueCache.cpp
+│   │       └── ...
+│   │
+│   └── third_party/                 # Dépendances tierces intégrées au projet
+│       ├── CMakeLists.txt           # Pour compiler les libs tierces
+│       ├── pugixml/                 # Parseur XML
+│       │   ├── src/
+│       │   │   ├── pugixml.cpp
+│       │   │   └── pugiconfig.hpp
+│       │   └── include/
+│       │       └── pugixml.hpp
+│       └── libiec61850/             # Si compilation from source, sinon lier le .so/.dll
+│           └── ...
+│
+└── ui/                              # Frontend QML
+    ├── CMakeLists.txt               # Configure et compile le module QML
+    │
+    ├── main.qml                     # Fichier QML racine
+    ├── MainWindow.qml               # Fenêtre principale
+    │
+    ├── components/                  # Composants QML réutilisables
+    │   ├── CircuitBreakerSymbol.qml
+    │   ├── DisconnectorSymbol.qml
+    │   ├── MeasurementSymbol.qml
+    │   └── ...
+    │
+    ├── views/                       # Écrans / Pages de l'application
+    │   ├── WelcomeView.qml
+    │   ├── SclLoadView.qml
+    │   ├── SingleLineDiagramView.qml # Vue principale avec le schéma
+    │   └── ...
+    │
+    ├── assets/                      # Ressources (images, icônes, polices)
+    │   └── icons/
+    │       ├── breaker-open.svg
+    │       ├── breaker-closed.svg
+    │       └── ...
+    │
+    └── qmldir                       # Définit le module QML et ses types
