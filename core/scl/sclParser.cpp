@@ -39,11 +39,20 @@ QList<Substation> SclParser::parseSubstations() {
             // Sous-noeud <Voltage>
             pugi::xml_node vNode = vlNode.child("Voltage");
             if (vNode) {
-                vl.nominalVoltage = vNode.attribute("nominalValue").as_double(0.0);
                 vl.multiplier     = QString::fromStdString(vNode.attribute("multiplier").as_string(""));
                 vl.unit           = QString::fromStdString(vNode.attribute("unit").as_string(""));
                 vl.nomFreq        = vNode.attribute("frequency").as_double(50.0);
                 vl.numPhases      = vNode.attribute("numPhases").as_int(3);
+
+                vl.nominalVoltage = vNode.text().as_double(0.0);
+
+                // Conversion suivant le multiplicateur
+                double factor = 1.0;
+                if (vl.multiplier == "k") factor = 1e3;
+                else if (vl.multiplier == "M") factor = 1e6;
+                else if (vl.multiplier == "m") factor = 1e-3;
+
+                vl.voltage = vl.nominalVoltage * factor;
             }
 
             // Bays
@@ -58,6 +67,11 @@ QList<Substation> SclParser::parseSubstations() {
                     eq.name = QString::fromStdString(eqNode.attribute("name").as_string());
                     eq.type = QString::fromStdString(eqNode.attribute("type").as_string());
                     bay.equipments.append(eq);
+
+                    for(pugi::xml_node terminalNode : eqNode.children())
+                    {
+                        //collecter les terminals Nodes
+                    }
                 }
 
                 vl.bays.append(bay);
@@ -84,7 +98,13 @@ QList<Ied> SclParser::parseIeds() {
 
     QList<Ied> ieds;
 
-    for (pugi::xml_node iedNode : m_doc.children("IED")) {
+    pugi::xml_node root = m_doc.child("SCL");
+    if (!root) {
+        qWarning() << "Pas de noeud <SCL> trouvé.";
+        return ieds;
+    }
+
+    for (pugi::xml_node iedNode : root.children("IED")) {
         Ied ied;
         ied.name          = QString::fromStdString(iedNode.attribute("name").as_string());
         ied.type          = QString::fromStdString(iedNode.attribute("type").as_string());
@@ -96,7 +116,7 @@ QList<Ied> SclParser::parseIeds() {
         for (pugi::xml_node apNode : iedNode.children("AccessPoint")) {
             AccessPoint ap;
             ap.name = QString::fromStdString(apNode.attribute("name").as_string());
-
+            /*
             // --- LDevices ---
             for (pugi::xml_node ldNode : apNode.children("LDevice")) {
                 LDevice ld;
@@ -124,7 +144,7 @@ QList<Ied> SclParser::parseIeds() {
                 }
 
                 ap.ldevices.append(ld);
-            }
+            }*/
 
             ied.accessPoints.append(ap);
         }

@@ -34,6 +34,13 @@ QList<Ied> SclManager::getIeds() const {
 
 void SclManager::printIeds() const
 {
+    qDebug().noquote() << "=== List of IEDs ===";
+
+    if (m_ieds.isEmpty()) {
+        qDebug().noquote() << "  Aucun IED trouvée.";
+        return;
+    }
+
     for (const auto &ied : m_ieds) {
         qDebug().noquote() << "IED:" << ied.name
                  << "Type:" << ied.type
@@ -49,7 +56,7 @@ void SclManager::printIeds() const
 
 void SclManager::printSubstations() const
 {
-    qDebug().noquote() << "=== Liste des Substations ===";
+    qDebug().noquote() << "=== List of Substations ===";
     if (m_substations.isEmpty()) {
         qDebug().noquote() << "  Aucune substation trouvée.";
         return;

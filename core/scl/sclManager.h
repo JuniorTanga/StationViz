@@ -2,8 +2,8 @@
 
 #include <QString>
 #include <QList>
-#include "ied.h"
-#include "substation.h"
+#include "models/ied.h"
+#include "models/substation.h"
 
 
 /**

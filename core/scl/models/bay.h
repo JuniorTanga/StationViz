@@ -9,10 +9,11 @@ class Bay {
 public:
     QString name;
     QString desc;
-    QList<LogicalNode> lNodes;
 
-    QList<ConductingEquipment> equipments;
+    QList<ConductingEquipment> equipments; //CBRs , DIS ...
     QList<ConnectivityNode> connectivityNodes;
+
+    QList<LogicalNode> lNodes; //A revoir après
 
     Bay() = default;
 };

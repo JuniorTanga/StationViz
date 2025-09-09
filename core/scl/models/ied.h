@@ -1,7 +1,6 @@
 #pragma once
 #include <QString>
 #include <QList>
-#include "logicalNode.h"
 
 #pragma once
 #include <QString>
