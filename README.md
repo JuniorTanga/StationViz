@@ -11,7 +11,6 @@
 *   **SCL Parser**: Imports and analyzes SCL files (SCD, ICD, CID) to extract substation topology, IEDs, and data models.
 *   **Interactive Single-Line Diagram (SLD)**: Automatically generates a real-time visual representation of the substation for intuitive monitoring.
 *   **IEC 61850 Communication**: Supports MMS and GOOSE protocols to monitor IED data points and send control commands.
-*   **Modern & Modular Architecture**: Built with C++, Qt, and CMake for performance, portability, and ease of development.
 
 ## Architecture
 
