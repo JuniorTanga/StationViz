@@ -1,16 +1,18 @@
-file (GLOB MODELS_HEADERS "models/*.h")
+file (GLOB MODELS_HEADERS "sclNodes/*.h")
 
 add_library(sclLib STATIC
 sclParser.h
 sclParser.cpp
 sclManager.h
 sclManager.cpp
+graph.h
+graph.cpp
 ${MODELS_HEADERS}
 )
 
 target_include_directories(sclLib
     PRIVATE
-        models/
+        sclNodes/
 )
 
 add_subdirectory(pugixml)

@@ -1,7 +1,7 @@
 #include "SclParser.h"
 #include <QDebug>
-#include "voltageLevel.h"
-#include "bay.h"
+#include "sclNodes/voltageLevel.h"
+#include "sclNodes/bay.h"
 
 SclParser::SclParser(const QString& filePath)
     : m_filePath(filePath) {}
@@ -66,12 +66,28 @@ QList<Substation> SclParser::parseSubstations() {
                     ConductingEquipment eq;
                     eq.name = QString::fromStdString(eqNode.attribute("name").as_string());
                     eq.type = QString::fromStdString(eqNode.attribute("type").as_string());
-                    bay.equipments.append(eq);
 
-                    for(pugi::xml_node terminalNode : eqNode.children())
+
+                    //Terminals
+                    for(pugi::xml_node terminalNode : eqNode.children("Terminal"))
                     {
-                        //collecter les terminals Nodes
+                        Terminal tl;
+                        tl.name = QString::fromStdString(terminalNode.attribute("name").as_string());
+                        tl.cNodeName = QString::fromStdString(terminalNode.attribute("cNodeName").as_string());
+                        tl.connectivityNode = QString::fromStdString(terminalNode.attribute("connectivityNode").as_string());
+                        eq.terminals.append(tl);
                     }
+
+                    bay.equipments.append(eq);
+                }
+
+                //Connectivity Node
+
+                for (pugi::xml_node connectNode : bayNode.children("ConnectivityNode")) {
+                    ConnectivityNode cn;
+                    cn.name = QString::fromStdString(connectNode.attribute("name").as_string());
+                    cn.pathName = QString::fromStdString(connectNode.attribute("pathName").as_string());
+                    bay.connectivityNodes.append(cn);
                 }
 
                 vl.bays.append(bay);

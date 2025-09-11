@@ -2,8 +2,8 @@
 
 #include <QString>
 #include <QList>
-#include "substation.h"
-#include "ied.h"
+#include "sclNodes/substation.h"
+#include "sclNodes/ied.h"
 
 // pugixml
 #include "pugixml/pugixml.hpp"

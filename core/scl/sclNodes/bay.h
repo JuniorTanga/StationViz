@@ -15,5 +15,5 @@ public:
 
     QList<LogicalNode> lNodes; //A revoir après
 
-    Bay() = default;
+    Bay() = default;   
 };

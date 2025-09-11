@@ -2,8 +2,9 @@
 
 #include <QString>
 #include <QList>
-#include "models/ied.h"
-#include "models/substation.h"
+#include "sclNodes/ied.h"
+#include "sclNodes/substation.h"
+#include "graph.h"
 
 
 /**
@@ -24,10 +25,16 @@ public:
     QList<Substation> getSubstations() const;
     QList<Ied> getIeds() const;
 
+    void buildBayGraphs();
+    const Graph& getBayGraph(const Bay* bay) const;
+    const QMap<const Bay*, Graph>& getBayGraphs() const;
+
     void printIeds() const;
     void printSubstations() const;
+    void printBays() const;
 
 private:
     QList<Substation> m_substations;
+    QMap<const Bay*, Graph> bayGraphs;
     QList<Ied> m_ieds;
 };
