@@ -23,108 +23,84 @@ bool SclManager::loadSclFile(const QString& filePath) {
              << m_ieds.size() << "IEDs.";
     return true;
 }
+void SclManager::buildBayGraphs() {
+    m_bayGraphs.clear();
 
-void SclManager::buildBayGraphs()
-{
-    bayGraphs.clear();
+    for (const auto& sub : m_substations) {
+        for (const auto& vl : sub.voltageLevels) {
+            for (const auto& bay : vl.bays) {
+                Graph graph;
 
-    // Parcours de toutes les Substations
-    for (const auto& substation : m_substations)
-    {
-        // Parcours des VoltageLevel
-        for (const auto& vl : substation.voltageLevels)
-        {
-            // Parcours des Bay
-            for (const auto& bay : vl.bays)
-            {
-                Graph g;
-
-                // --- Étape 1 : Ajouter les noeuds (ConnectivityNodes) ---
-                for (const auto& node : bay.connectivityNodes)
-                {
-                    g.addNode(node.pathName,node.name); //pathName is the Id
+                // === Ajouter les ConnectivityNodes comme noeuds ===
+                for (const auto& cn : bay.connectivityNodes) {
+                    graph.addNode(cn.pathName, cn.name);
                 }
 
-                // --- Étape 2 : Ajouter les arêtes (liaisons ConductingEquipment-Terminals) ---
-                for (const auto& ce : bay.equipments)
-                {
-                    const auto& terminals = ce.terminals;
-                    if (terminals.size() == 2) // Hypothèse : 2 terminaux
-                    {
-                        QString n1 = terminals[0].cNodeName;
-                        QString n2 = terminals[1].cNodeName;
+                // === Ajouter les ConductingEquipments comme noeuds + arêtes ===
+                for (const auto& eq : bay.equipments) {
+                    QString eqId = bay.name + "/" + eq.name; // identifiant unique
+                    graph.addNode(eqId, eq.name);
 
-                        g.addEdge(n1,n2,ce.name,ce.type); //NB: Utiliser g.addEdge({id,name,type..}) pour aller plus vite
-                        // On met aussi le nom de l’équipement comme label de l’arête
+                    if (eq.terminals.size() == 2) {
+                        QString n1 = eq.terminals[0].connectivityNode;
+                        QString n2 = eq.terminals[1].connectivityNode;
+
+                        // relier les CN au node équipement
+                        graph.addEdge(eqId, n1, eq.name, eq.type);
+                        graph.addEdge(eqId, n2, eq.name, eq.type);
+                    }
+                    else if (eq.terminals.size() == 1) {
+                        QString n1 = eq.terminals[0].connectivityNode;
+                        graph.addEdge(eqId, n1, eq.name, eq.type);
+                    }
+                    else {
+                        qWarning() << "Equipement" << eq.name
+                                   << "dans Bay" << bay.name
+                                   << "a un nombre inattendu de terminaux:"
+                                   << eq.terminals.size();
                     }
                 }
 
-                // --- Étape 3 : (optionnel) organiser le graphe ---
-                g.layoutLinear(); // méthode à coder plus tard pour arranger les noeuds
-
-                // --- Étape 4 : enregistrement dans la Map ---
-                bayGraphs.insert(&bay, g);
+                QString bayId = sub.name + "/" + vl.name + "/" + bay.name;
+                m_bayGraphs.insert(bayId, graph);
             }
         }
     }
 }
 
-void SclManager::printBays() const
-{
-    if (bayGraphs.isEmpty()) {
-        qWarning() << "No Bay graphs available. Call buildBayGraphs() first.";
+void SclManager::printBays() const {
+    if (m_bayGraphs.isEmpty()) {
+        qWarning() << "Aucun graphe de Bay disponible. As-tu appelé buildBayGraphs() ?";
         return;
     }
 
-    for (auto it = bayGraphs.cbegin(); it != bayGraphs.cend(); ++it) {
-        const Bay* bay = it.key();
+    for (auto it = m_bayGraphs.begin(); it != m_bayGraphs.end(); ++it) {
+        const QString& bayId = it.key();
         const Graph& graph = it.value();
 
-        qDebug() << "===== Bay:" << bay->name << "=====";
+        qDebug() << "\n=== Bay:" << bayId << "===";
 
-        const auto& nodes = graph.getLinearSequenceNodes();
-        const auto& edges = graph.getLinearSequenceEdges();
-
-        if (nodes.isEmpty()) {
-            qWarning() << "Bay" << bay->name << "has no nodes.";
-            continue;
-        }
-        if (edges.isEmpty()) {
-            qWarning() << "Bay" << bay->name << "has no edges.";
+        auto leaves = graph.getLeaves();
+        if (leaves.isEmpty()) {
+            qWarning() << "Bay" << bayId << "n’a pas de leaf nodes.";
             continue;
         }
 
-        // On imprime la séquence nœuds -> équipements
-        qDebug() << "Linear sequence for Bay" << bay->name << ":";
+        const Node* start = leaves.first();
+        QList<const Node*> sequence = graph.linearNodeSequenceFrom(start->id);
 
-        for (int i = 0; i < edges.size(); ++i) {
-            const Edge& edge = edges[i];
-            QString startNode = edge.node1;
-            QString endNode = edge.node2;
-
-            // Affiche le noeud de départ, le nom du CE (étiquette arête) et le noeud suivant
-            qDebug() << startNode << " --[" << edge.name << "]--> " << endNode;
+        if (sequence.isEmpty()) {
+            qWarning() << "Bay" << bayId << "séquence vide.";
+            continue;
         }
 
-        // Affiche les nœuds isolés s’il y en a
-        for (const auto& node : nodes) {
-            bool connected = false;
-            for (const auto& edge : edges) {
-                if (edge.node1 == node || edge.node2 == node) {
-                    connected = true;
-                    break;
-                }
-            }
-            if (!connected) {
-                qDebug() << node << "(isolated node)";
-            }
+        QStringList seqStr;
+        for (const Node* node : sequence) {
+            seqStr << (node->name.isEmpty() ? node->id : node->name);
         }
-
-        qDebug() << "\n"; // séparation entre les Bays
+        qDebug() << "Sequence:" << seqStr.join(" -> ");
     }
 }
-
-
 
 QList<Substation> SclManager::getSubstations() const {
     return m_substations;

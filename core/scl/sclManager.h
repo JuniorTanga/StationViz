@@ -35,6 +35,6 @@ public:
 
 private:
     QList<Substation> m_substations;
-    QMap<const Bay*, Graph> bayGraphs;
+    QMap<QString, Graph> m_bayGraphs;
     QList<Ied> m_ieds;
 };

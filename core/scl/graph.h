@@ -2,47 +2,50 @@
 #include <QString>
 #include <QMap>
 #include <QList>
-
+#include <QSet>
+#include <QDebug>
 
 struct Node {
     QString id;       // unique ID
     QString name;     // local name (optional)
 };
 
-
 struct Edge {
+    const Node* node1 {nullptr};
+    const Node* node2 {nullptr};
     QString id;
     QString name;
     QString type;
-    QString node1;
-    QString node2;
 };
 
 class Graph {
 public:
+    // Ajout de noeuds
     void addNode(const Node& node);
-    void addEdge(const Edge& edge);
+    void addNode(const QString& nodeId, const QString& nodeName = "");
 
-    void addNode(const QString& nodeId = "",const QString& nodeName = "");
-    void addEdge(const QString& node1, const QString& node2, const QString& label = "", const QString type = "");
+    // Ajout d'arêtes
+    void addEdge(const QString& nodeId1, const QString& nodeId2,
+                 const QString& label = "", const QString& type = "");
+    void addEdge(const Edge& edge); // version directe (rarement utile)
 
+    // Accesseurs
     QList<Node> getNodes() const;
     QList<Edge> getEdges() const;
 
-    QList<QString> toLinearSequence() const;
+    // Outils d'analyse
+    int nodeDegree(const QString& nodeId) const;
+    QList<const Edge*> edgesConnectedTo(const QString& nodeId) const;
+    QList<const Node*> getNeighbors(const QString& nodeId) const;
 
-    const QList<QString>& getLinearSequenceNodes() const { return m_linearSequenceNodes; }
-    const QList<Edge>& getLinearSequenceEdges() const { return m_linearSequenceEdges; }
-
-    void layoutLinear(); // <-- méthode à implémenter
+    // Parcours linéaire
+    QList<const Edge*> linearPathFrom(const QString& startNodeId) const;
+    QList<const Edge*> linearPathFromLeaf() const;
+    QList<const Node*> linearNodeSequenceFrom(const QString& startNodeId) const;
+    QList<const Node*> getLeaves() const;
+    void printGraph() const;
 
 private:
     QMap<QString, Node> m_nodes;   // id -> Node
-    QList<Edge> m_edges;
-    QList<QString> m_linearSequenceNodes;
-    QList<Edge> m_linearSequenceEdges;
-
-    int nodeDegree(const QString& nodeId) const;
-    QList<Edge> edgesConnectedTo(const QString& nodeId) const;
+    QList<Edge> m_edges;           // liste d’arêtes
 };
-
