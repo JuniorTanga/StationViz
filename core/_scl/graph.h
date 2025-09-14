@@ -25,8 +25,10 @@ public:
     void addNode(const QString& nodeId, const QString& nodeName = "");
 
     // Ajout d'arêtes
-    void addEdge(const QString& nodeId1, const QString& nodeId2,
+    void createEdge(const QString& nodeId1, const QString& nodeId2,
                  const QString& label = "", const QString& type = "");
+    void addEdge(const QString& nodeId1, const QString& nodeId2,
+                    const QString& label = "", const QString& type = "");
     void addEdge(const Edge& edge); // version directe (rarement utile)
 
     // Accesseurs

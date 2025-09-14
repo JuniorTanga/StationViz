@@ -59,7 +59,7 @@ void Graph::printGraph() const {
 
 
 
-void Graph::addEdge(const QString& nodeId1, const QString& nodeId2,
+void Graph::createEdge(const QString& nodeId1, const QString& nodeId2,
                     const QString& label, const QString& type) {
     if (!m_nodes.contains(nodeId1) || !m_nodes.contains(nodeId2)) {
         qWarning() << "Cannot add edge, missing nodes:" << nodeId1 << nodeId2;
@@ -86,7 +86,14 @@ void Graph::addEdge(const QString& nodeId1, const QString& nodeId2,
     m_edges.append(edge);
 }
 
-// ----------------- Accesseurs -----------------
+void Graph::addEdge(const QString &nodeId1, const QString &nodeId2, const QString &label, const QString &type)
+{
+    addNode(nodeId1);
+    addNode(nodeId2);
+    createEdge(nodeId1,nodeId2);
+}
+
+// ----------------- getters -----------------
 QList<Node> Graph::getNodes() const {
     return m_nodes.values();
 }

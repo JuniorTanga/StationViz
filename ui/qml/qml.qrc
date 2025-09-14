@@ -1,0 +1,14 @@
+<RCC>
+  <qresource prefix="/icons">
+    <file alias="busbar.svg">../icons/busbar.svg</file>
+    <file alias="bay.svg">../icons/bay.svg</file>
+    <file alias="cbr_closed.svg">../icons/cbr_closed.svg</file>
+    <file alias="cbr_opened.svg">../icons/cbr_opened.svg</file>
+    <file alias="cbr_intermediate.svg">../icons/cbr_intermediate.svg</file>
+    <file alias="ds_opened.svg">../icons/ds_opened.svg</file>
+    <file alias="ds_closed.svg">../icons/ds_closed.svg</file>
+    <file alias="transformer_2w.svg">../icons/transformer_2w.svg</file>
+    <file alias="label.svg">../icons/label.svg</file>
+    <file alias="unknown.svg">../icons/unknown.svg</file>
+  </qresource>
+</RCC>

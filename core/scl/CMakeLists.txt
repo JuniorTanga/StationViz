@@ -1,23 +1,29 @@
-file (GLOB MODELS_HEADERS "sclNodes/*.h")
+cmake_minimum_required(VERSION 3.20)
 
-add_library(sclLib STATIC
-sclParser.h
-sclParser.cpp
-sclManager.h
-sclManager.cpp
-graph.h
-graph.cpp
-${MODELS_HEADERS}
-)
-
-target_include_directories(sclLib
-    PRIVATE
-        sclNodes/
+add_library(sclLib
+    SclManager.h
+    SclParser.h
+    SclParser.cpp
+    SclManager.cpp
+    SclTypes.h
+    Result.h
 )
 
 add_subdirectory(pugixml)
-find_package(Qt6 REQUIRED COMPONENTS Core)
-target_link_libraries(sclLib
-    PRIVATE Qt6::Core
-    PRIVATE pugixmlLib
-)
+
+# Entêtes publics
+# target_include_directories(sclLib
+#     PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include
+# )
+
+# C++ standard
+#set_target_properties(sclLib PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED YES)
+
+target_link_libraries(sclLib PRIVATE pugixmlLib)
+
+# Warnings utiles
+# if (MSVC)
+#     target_compile_options(sclLib PRIVATE /W4)
+# else()
+#     target_compile_options(sclLib PRIVATE -Wall -Wextra -Wpedantic)
+# endif()

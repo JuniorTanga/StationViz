@@ -1,172 +1,254 @@
 #include "SclParser.h"
-#include <QDebug>
-#include "sclNodes/voltageLevel.h"
-#include "sclNodes/bay.h"
+#include "pugixml/pugixml.hpp"
+#include <sstream>
 
-SclParser::SclParser(const QString& filePath)
-    : m_filePath(filePath) {}
+using namespace scl;
 
-bool SclParser::loadFile() {
-    pugi::xml_parse_result result = m_doc.load_file(m_filePath.toStdString().c_str());
-    if (!result) {
-        qWarning() << "Erreur de parsing XML:" << result.description()
-        << "à offset" << result.offset;
-        return false;
+namespace {
+
+static std::unordered_map<std::string, std::string>
+readAddress(const pugi::xml_node &parent) {
+    std::unordered_map<std::string, std::string> res;
+    if (auto addr = parent.child("Address")) {
+        for (auto p : addr.children("P")) {
+            std::string key = p.attribute("type").as_string("");
+            std::string val = p.text().as_string("");
+            if (!key.empty())
+                res[key] = val;
+        }
     }
-    return true;
+    return res;
 }
 
-QList<Substation> SclParser::parseSubstations() {
-    QList<Substation> substations;
-
-    pugi::xml_node root = m_doc.child("SCL");
-    if (!root) {
-        qWarning() << "Erreur: noeud <SCL> introuvable.";
-        return substations;
+static void readLNodes(const pugi::xml_node &parent,
+                       std::vector<LNodeRef> &out) {
+    for (auto ln : parent.children("LNode")) {
+        LNodeRef r{};
+        r.iedName = ln.attribute("iedName").as_string("");
+        r.ldInst = ln.attribute("ldInst").as_string("");
+        r.prefix = ln.attribute("prefix").as_string("");
+        r.lnClass = ln.attribute("lnClass").as_string("");
+        r.lnInst = ln.attribute("lnInst").as_string("");
+        out.push_back(std::move(r));
     }
-
-    for (pugi::xml_node subNode : root.children("Substation")) {
-        Substation sub;
-        sub.name = QString::fromStdString(subNode.attribute("name").as_string());
-        sub.desc = QString::fromStdString(subNode.attribute("desc").as_string());
-
-        // VoltageLevels
-        for (pugi::xml_node vlNode : subNode.children("VoltageLevel")) {
-            VoltageLevel vl;
-            vl.name = QString::fromStdString(vlNode.attribute("name").as_string());
-            vl.desc = QString::fromStdString(vlNode.attribute("desc").as_string());
-
-            // Sous-noeud <Voltage>
-            pugi::xml_node vNode = vlNode.child("Voltage");
-            if (vNode) {
-                vl.multiplier     = QString::fromStdString(vNode.attribute("multiplier").as_string(""));
-                vl.unit           = QString::fromStdString(vNode.attribute("unit").as_string(""));
-                vl.nomFreq        = vNode.attribute("frequency").as_double(50.0);
-                vl.numPhases      = vNode.attribute("numPhases").as_int(3);
-
-                vl.nominalVoltage = vNode.text().as_double(0.0);
-
-                // Conversion suivant le multiplicateur
-                double factor = 1.0;
-                if (vl.multiplier == "k") factor = 1e3;
-                else if (vl.multiplier == "M") factor = 1e6;
-                else if (vl.multiplier == "m") factor = 1e-3;
-
-                vl.voltage = vl.nominalVoltage * factor;
-            }
-
-            // Bays
-            for (pugi::xml_node bayNode : vlNode.children("Bay")) {
-                Bay bay;
-                bay.name = QString::fromStdString(bayNode.attribute("name").as_string());
-                bay.desc = QString::fromStdString(bayNode.attribute("desc").as_string());
-
-                // ConductingEquipment
-                for (pugi::xml_node eqNode : bayNode.children("ConductingEquipment")) {
-                    ConductingEquipment eq;
-                    eq.name = QString::fromStdString(eqNode.attribute("name").as_string());
-                    eq.type = QString::fromStdString(eqNode.attribute("type").as_string());
-
-
-                    //Terminals
-                    for(pugi::xml_node terminalNode : eqNode.children("Terminal"))
-                    {
-                        Terminal tl;
-                        tl.name = QString::fromStdString(terminalNode.attribute("name").as_string());
-                        tl.cNodeName = QString::fromStdString(terminalNode.attribute("cNodeName").as_string());
-                        tl.connectivityNode = QString::fromStdString(terminalNode.attribute("connectivityNode").as_string());
-                        eq.terminals.append(tl);
-                    }
-
-                    bay.equipments.append(eq);
-                }
-
-                //Connectivity Node
-
-                for (pugi::xml_node connectNode : bayNode.children("ConnectivityNode")) {
-                    ConnectivityNode cn;
-                    cn.name = QString::fromStdString(connectNode.attribute("name").as_string());
-                    cn.pathName = QString::fromStdString(connectNode.attribute("pathName").as_string());
-                    bay.connectivityNodes.append(cn);
-                }
-
-                vl.bays.append(bay);
-            }
-
-            sub.voltageLevels.append(vl);
-        }
-
-        // PowerTransformers
-        for (pugi::xml_node trNode : subNode.children("PowerTransformer")) {
-            PowerTransformer tr;
-            tr.name = QString::fromStdString(trNode.attribute("name").as_string());
-            tr.desc = QString::fromStdString(trNode.attribute("desc").as_string());
-            sub.transformers.append(tr);
-        }
-
-        substations.append(sub);
-    }
-
-    return substations;
 }
 
-QList<Ied> SclParser::parseIeds() {
-
-    QList<Ied> ieds;
-
-    pugi::xml_node root = m_doc.child("SCL");
-    if (!root) {
-        qWarning() << "Pas de noeud <SCL> trouvé.";
-        return ieds;
+static void readTerminals(const pugi::xml_node &ceNode,
+                          std::vector<Terminal> &out) {
+    for (auto t : ceNode.children("Terminal")) {
+        Terminal term{};
+        term.name = t.attribute("name").as_string("");
+        term.connectivityNodeRef = t.attribute("connectivityNode").as_string("");
+        term.cNodeName = t.attribute("cNodeName").as_string("");
+        out.push_back(std::move(term));
     }
+}
 
-    for (pugi::xml_node iedNode : root.children("IED")) {
-        Ied ied;
-        ied.name          = QString::fromStdString(iedNode.attribute("name").as_string());
-        ied.type          = QString::fromStdString(iedNode.attribute("type").as_string());
-        ied.manufacturer  = QString::fromStdString(iedNode.attribute("manufacturer").as_string());
-        ied.configVersion = QString::fromStdString(iedNode.attribute("configVersion").as_string());
-        ied.owner         = QString::fromStdString(iedNode.attribute("owner").as_string());
+static void readConnectivityNodes(const pugi::xml_node &parent,
+                                  std::vector<ConnectivityNode> &out) {
+    for (auto cn : parent.children("ConnectivityNode")) {
+        ConnectivityNode c{};
+        c.name = cn.attribute("name").as_string("");
+        c.pathName = cn.attribute("pathName").as_string("");
+        out.push_back(std::move(c));
+    }
+}
 
-        // --- AccessPoints ---
-        for (pugi::xml_node apNode : iedNode.children("AccessPoint")) {
-            AccessPoint ap;
-            ap.name = QString::fromStdString(apNode.attribute("name").as_string());
-            /*
-            // --- LDevices ---
-            for (pugi::xml_node ldNode : apNode.children("LDevice")) {
-                LDevice ld;
-                ld.inst = QString::fromStdString(ldNode.attribute("inst").as_string());
+static void readConductingEquipments(const pugi::xml_node &parent,
+                                     std::vector<ConductingEquipment> &out) {
+    for (auto ce : parent.children("ConductingEquipment")) {
+        ConductingEquipment e{};
+        e.name = ce.attribute("name").as_string("");
+        e.type = ce.attribute("type").as_string("");
+        readTerminals(ce, e.terminals);
+        readLNodes(ce, e.lnodes);
+        out.push_back(std::move(e));
+    }
+}
 
-                // --- LN0 ---
-                pugi::xml_node ln0Node = ldNode.child("LN0");
-                if (ln0Node) {
-                    LogicalNode ln0;
-                    ln0.lnClass = QString::fromStdString(ln0Node.attribute("lnClass").as_string());
-                    ln0.inst    = QString::fromStdString(ln0Node.attribute("inst").as_string());
-                    ln0.lnType  = QString::fromStdString(ln0Node.attribute("lnType").as_string());
-                    ln0.prefix  = QString::fromStdString(ln0Node.attribute("prefix").as_string());
-                    ld.ln0 = ln0;
-                }
+static std::optional<ScalarWithUnit> readVoltageNode(const pugi::xml_node &vl) {
+    if (auto volt = vl.child("Voltage")) {
+        ScalarWithUnit sv{};
+        sv.value = std::stod(std::string(volt.text().as_string("0")));
+        sv.unit = volt.attribute("unit").as_string("");
+        sv.multiplier = volt.attribute("multiplier").as_string("");
+        return sv;
+    }
+    return std::nullopt;
+}
 
-                // --- LN ---
-                for (pugi::xml_node lnNode : ldNode.children("LN")) {
-                    LogicalNode ln;
-                    ln.lnClass = QString::fromStdString(lnNode.attribute("lnClass").as_string());
-                    ln.inst    = QString::fromStdString(lnNode.attribute("inst").as_string());
-                    ln.lnType  = QString::fromStdString(lnNode.attribute("lnType").as_string());
-                    ln.prefix  = QString::fromStdString(lnNode.attribute("prefix").as_string());
-                    ld.lns.append(ln);
-                }
+static void readLogicalNodes(const pugi::xml_node &ldNode,
+                             std::vector<LogicalNode> &out) {
+    // LN0
+    if (auto ln0 = ldNode.child("LN0")) {
+        LogicalNode ln{};
+        ln.prefix = ln0.attribute("prefix").as_string("");
+        ln.lnClass = ln0.attribute("lnClass").as_string("");
+        ln.inst = ""; // LN0
+        out.push_back(std::move(ln));
+    }
+    // LN*
+    for (auto ln : ldNode.children("LN")) {
+        LogicalNode l{};
+        l.prefix = ln.attribute("prefix").as_string("");
+        l.lnClass = ln.attribute("lnClass").as_string("");
+        l.inst = ln.attribute("inst").as_string("");
+        out.push_back(std::move(l));
+    }
+}
 
-                ap.ldevices.append(ld);
-            }*/
+static void readLDevicesUnder(const pugi::xml_node &parent,
+                              std::vector<LogicalDevice> &out) {
+    for (auto ld : parent.children("LDevice")) {
+        LogicalDevice d{};
+        d.inst = ld.attribute("inst").as_string("");
+        readLogicalNodes(ld, d.lns);
+        out.push_back(std::move(d));
+    }
+}
 
-            ied.accessPoints.append(ap);
+static void readIEDs(const pugi::xml_node &root, std::vector<IED> &out) {
+    for (auto ied : root.children("IED")) {
+        IED I{};
+        I.name = ied.attribute("name").as_string("");
+        I.manufacturer = ied.attribute("manufacturer").as_string("");
+        I.type = ied.attribute("type").as_string("");
+
+        // 1) LDevice directement sous IED (peu fréquent mais toléré par certains
+        // outils)
+        readLDevicesUnder(ied, I.ldevices);
+
+        // 2) AccessPoint/Server/LDevice (forme canonique)
+        for (auto ap : ied.children("AccessPoint")) {
+            AccessPoint A{};
+            A.name = ap.attribute("name").as_string("");
+            A.address = readAddress(ap);
+            if (auto server = ap.child("Server")) {
+                readLDevicesUnder(server, A.ldevices);
+            }
+            I.accessPoints.push_back(std::move(A));
         }
 
-        ieds.append(ied);
+        out.push_back(std::move(I));
+    }
+}
+
+static Communication readCommunication(const pugi::xml_node &root) {
+    Communication C{};
+    if (auto comm = root.child("Communication")) {
+        for (auto sn : comm.children("SubNetwork")) {
+            SubNetwork S{};
+            S.name = sn.attribute("name").as_string("");
+            S.type = sn.attribute("type").as_string("");
+            // propriétés diverses
+            for (auto p : sn.children("Text")) {
+                (void)p; // placeholder si besoin
+            }
+            // parfois des P directement sous SubNetwork (BitRate, etc.)
+            for (auto p : sn.children("P")) {
+                std::string key = p.attribute("type").as_string("");
+                if (!key.empty())
+                    S.props[key] = p.text().as_string("");
+            }
+
+            for (auto cap : sn.children("ConnectedAP")) {
+                ConnectedAP CAP{};
+                CAP.iedName = cap.attribute("iedName").as_string("");
+                CAP.apName = cap.attribute("apName").as_string("");
+                CAP.address = readAddress(cap);
+
+                // GSE / SMV
+                for (auto g : cap.children("GSE")) {
+                    GSE G{};
+                    G.ldInst = g.attribute("ldInst").as_string("");
+                    G.cbName = g.attribute("cbName").as_string("");
+                    G.address = readAddress(g);
+                    CAP.gses.push_back(std::move(G));
+                }
+                for (auto s : cap.children("SMV")) {
+                    SMV V{};
+                    V.ldInst = s.attribute("ldInst").as_string("");
+                    V.cbName = s.attribute("cbName").as_string("");
+                    V.address = readAddress(s);
+                    CAP.smvs.push_back(std::move(V));
+                }
+
+                S.connectedAPs.push_back(std::move(CAP));
+            }
+
+            C.subNetworks.push_back(std::move(S));
+        }
+    }
+    return C;
+}
+
+static Result<SclModel> parseDoc(pugi::xml_document &doc) {
+    SclModel model{};
+
+    auto root = doc.child("SCL");
+    if (!root) {
+        return Result<SclModel>({ErrorCode::XmlParseError, "Missing <SCL> root"});
+    }
+    model.version = root.attribute("version").as_string("");
+    model.revision = root.attribute("revision").as_string("");
+
+    // --- Substations
+    for (auto ss : root.children("Substation")) {
+        Substation S{};
+        S.name = ss.attribute("name").as_string("");
+        readLNodes(ss, S.lnodes);
+        for (auto vl : ss.children("VoltageLevel")) {
+            VoltageLevel V{};
+            V.name = vl.attribute("name").as_string("");
+            V.nomFreq = vl.attribute("nomFreq").as_string("");
+            V.voltage = readVoltageNode(vl);
+            readLNodes(vl, V.lnodes);
+            for (auto bay : vl.children("Bay")) {
+                Bay B{};
+                B.name = bay.attribute("name").as_string("");
+                readConnectivityNodes(bay, B.connectivityNodes);
+                readConductingEquipments(bay, B.equipments);
+                readLNodes(bay, B.lnodes);
+                V.bays.push_back(std::move(B));
+            }
+            S.vlevels.push_back(std::move(V));
+        }
+        model.substations.push_back(std::move(S));
     }
 
-    return ieds;
+    // --- IEDs
+    readIEDs(root, model.ieds);
+
+    // --- Communication
+    model.communication = readCommunication(root);
+
+    return Result<SclModel>(std::move(model));
+}
+
+} // namespace
+
+SclParser::SclParser() = default;
+
+Result<SclModel> SclParser::parseFile(const std::string &path) {
+    pugi::xml_document doc;
+    pugi::xml_parse_result ok =
+        doc.load_file(path.c_str(), pugi::parse_default | pugi::parse_ws_pcdata);
+    if (!ok) {
+        std::ostringstream oss;
+        oss << "XML parse error: " << ok.description() << ", offset=" << ok.offset;
+        return Result<SclModel>({ErrorCode::XmlParseError, oss.str()});
+    }
+    return parseDoc(doc);
+}
+
+Result<SclModel> SclParser::parseString(const std::string &xml) {
+    pugi::xml_document doc;
+    pugi::xml_parse_result ok =
+        doc.load_string(xml.c_str(), pugi::parse_default | pugi::parse_ws_pcdata);
+    if (!ok) {
+        std::ostringstream oss;
+        oss << "XML parse error: " << ok.description() << ", offset=" << ok.offset;
+        return Result<SclModel>({ErrorCode::XmlParseError, oss.str()});
+    }
+    return parseDoc(doc);
 }
