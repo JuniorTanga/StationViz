@@ -7,6 +7,7 @@ add_library(sclLib
     SclManager.cpp
     SclTypes.h
     Result.h
+    JsonWriter.h
 )
 
 add_subdirectory(pugixml)

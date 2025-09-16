@@ -4,6 +4,29 @@
 
 using namespace scl;
 
+// scl/PathUtils.h
+inline std::optional<CNAddress> parseConnectivityPath(const std::string& path) {
+    // format attendu: ".../<VL>/<BAY>/<CONNECTIVITY_NODEXX>"
+    // On prend les 3 derniers segments non vides
+    std::vector<std::string> segs;
+    std::string cur;
+    for (char c : path) {
+        if (c == '/') { if (!cur.empty()) { segs.push_back(cur); cur.clear(); } }
+        else cur.push_back(c);
+    }
+    if (!cur.empty()) segs.push_back(cur);
+    if (segs.size() < 3) return std::nullopt;
+
+    CNAddress a;
+    a.cn  = segs.back();
+    a.bay = segs[segs.size()-2];
+    a.vl  = segs[segs.size()-3];
+    // SS : on tente via préfixe ou l’attribut substationName du Terminal
+    // Ici on ne peut pas inférer directement, on le remplira au call-site.
+    return a;
+}
+
+
 namespace {
 
 static std::unordered_map<std::string, std::string>
@@ -197,6 +220,41 @@ static Result<SclModel> parseDoc(pugi::xml_document &doc) {
         Substation S{};
         S.name = ss.attribute("name").as_string("");
         readLNodes(ss, S.lnodes);
+
+        // scl/SclParser.cpp (dans parseSubstationNode(...))
+        for (auto ptNode : ss.children("PowerTransformer")) {
+            PowerTransformer pt;
+            pt.name = ptNode.attribute("name").as_string();
+            pt.desc = ptNode.attribute("desc").as_string();
+            pt.type = ptNode.attribute("type").as_string();
+
+            for (auto wNode : ptNode.children("TransformerWinding")) {
+                TransformerWinding w;
+                w.name = wNode.attribute("name").as_string();
+                w.type = wNode.attribute("type").as_string();
+
+                // TapChanger (optionnel)
+                if (auto tc = wNode.child("TapChanger")) {
+                    TapChangerInfo tci;
+                    tci.name = tc.attribute("name").as_string();
+                    tci.type = tc.attribute("type").as_string();
+                    w.tapChanger = tci;
+                }
+
+                for (auto tNode : wNode.children("Terminal")) {
+                    TerminalRef tr;
+                    tr.name = tNode.attribute("name").as_string();
+                    tr.cNodeName = tNode.attribute("cNodeName").as_string();
+                    tr.connectivityPath = tNode.attribute("connectivityNode").as_string();
+                    tr.substationName = tNode.attribute("substationName").as_string();
+                    w.terminals.push_back(std::move(tr));
+                }
+                pt.windings.push_back(std::move(w));
+            }
+            S.powerTransformers.push_back(std::move(pt));
+        }
+
+
         for (auto vl : ss.children("VoltageLevel")) {
             VoltageLevel V{};
             V.name = vl.attribute("name").as_string("");
@@ -214,6 +272,30 @@ static Result<SclModel> parseDoc(pugi::xml_document &doc) {
             S.vlevels.push_back(std::move(V));
         }
         model.substations.push_back(std::move(S));
+    }
+
+    for (auto &ss : model.substations) {
+        for (auto &pt : ss.powerTransformers) {
+            for (auto &w : pt.windings) {
+                w.resolvedEnds.clear();
+                for (const auto &tr : w.terminals) {
+                    TransformerWinding::ResolvedEnd re;
+                    re.ss = !tr.substationName.empty() ? tr.substationName : ss.name;
+
+                    if (!tr.connectivityPath.empty()) {
+                        if (auto addr = parseConnectivityPath(tr.connectivityPath)) {
+                            re.vl = addr->vl; re.bay = addr->bay; re.cn = addr->cn;
+                        } else {
+                            // fallback: cNodeName seul -> on le cherchera plus tard via index
+                            re.cn = tr.cNodeName;
+                        }
+                    } else {
+                        re.cn = tr.cNodeName;
+                    }
+                    w.resolvedEnds.push_back(re);
+                }
+            }
+        }
     }
 
     // --- IEDs

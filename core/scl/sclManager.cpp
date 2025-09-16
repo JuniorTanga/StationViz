@@ -1,5 +1,6 @@
 #include "SclManager.h"
 #include "SclParser.h"
+#include "JsonWriter.h"
 #include <iostream>
 #include <sstream>
 
@@ -321,144 +322,183 @@ static std::string jsonEscape(const std::string &s) {
 }
 
 std::string SclManager::toJsonSubstations() const {
-    std::ostringstream os;
-    os << "{""substations"":"
-       << "[";
-    if (!model_) {
-        os << "]}";
-        return os.str();
-    }
-    bool firstSS = true;
-    for (const auto &ss : model_->substations) {
-        if (!firstSS)
-            os << ",";
-        firstSS = false;
-        os << "{""name"":"
-           << '"' << jsonEscape(ss.name) << '"'
-           << ",""vlevels"":"
-           << "[";
-        bool firstVL = true;
-        for (const auto &vl : ss.vlevels) {
-            if (!firstVL)
-                os << ",";
-            firstVL = false;
-            os << "{""name"":"
-               << '"' << jsonEscape(vl.name) << '"';
-            if (vl.voltage) {
-                os << ",""voltage"":{""value"":"
-                   << vl.voltage->value
-                   << ",""unit"":""\n"
-                   << jsonEscape(vl.voltage->unit)
-                   << "\n"",""mult"":""\n"
-                   << jsonEscape(vl.voltage->multiplier)
-                   << "\n""}";
-            }
-            os << ",""bays"":"
-               << "[";
-            bool firstB = true;
-            for (const auto &bay : vl.bays) {
-                if (!firstB)
-                    os << ",";
-                firstB = false;
-                os << "{""name"":"
-                   << '"' << jsonEscape(bay.name) << '"'
-                   << ",""equipments"":"
-                   << "[";
-                bool firstE = true;
-                for (const auto &ce : bay.equipments) {
-                    if (!firstE)
-                        os << ",";
-                    firstE = false;
-                    os << "{""name"":"
-                       << '"' << jsonEscape(ce.name) << '"'
-                       << ",""type"":"
-                       << '"' << jsonEscape(ce.type) << '"'
-                       << ",""terminals"":"
-                       << "[";
-                    bool firstT = true;
-                    for (const auto &t : ce.terminals) {
-                        if (!firstT)
-                            os << ",";
-                        firstT = false;
-                        os << "{""name"":"
-                           << '"' << jsonEscape(t.name) << '"'
-                           << ",""cn"":"
-                           << '"'
-                           << jsonEscape(!t.connectivityNodeRef.empty()
-                                             ? t.connectivityNodeRef
-                                             : t.cNodeName)
-                           << '"' << "}";
-                    }
-                    os << "]}";
+    JsonWriter w;
+    w.beginObject();
+    w.key("substations").beginArray();
+
+    if (model_) {
+        for (const auto& ss : model_->substations) {
+            w.beginObject();
+            w.key("name").value(ss.name);
+
+            // VoltageLevels
+            w.key("vlevels").beginArray();
+            for (const auto& vl : ss.vlevels) {
+                w.beginObject();
+                w.key("name").value(vl.name);
+
+                if (vl.voltage) {
+                    w.key("voltage").beginObject();
+                    w.key("value").value(vl.voltage->value);
+                    w.key("unit").value(vl.voltage->unit);
+                    w.key("mult").value(vl.voltage->multiplier);
+                    w.endObject();
                 }
-                os << "]}";
+
+                // Bays
+                w.key("bays").beginArray();
+                for (const auto& bay : vl.bays) {
+                    w.beginObject();
+                    w.key("name").value(bay.name);
+
+                    // ConnectivityNodes (pratique pour le SLD)
+                    w.key("connectivityNodes").beginArray();
+                    for (const auto& cn : bay.connectivityNodes) {
+                        w.beginObject();
+                        w.key("name").value(cn.name);
+                        if (!cn.pathName.empty())
+                            w.key("path").value(cn.pathName);
+                        w.endObject();
+                    }
+                    w.endArray();
+
+                    // Equipements
+                    w.key("equipments").beginArray();
+                    for (const auto& ce : bay.equipments) {
+                        w.beginObject();
+                        w.key("name").value(ce.name);
+                        w.key("type").value(ce.type);
+
+                        // Terminals -> CN
+                        w.key("terminals").beginArray();
+                        for (const auto& t : ce.terminals) {
+                            w.beginObject();
+                            w.key("name").value(t.name);
+                            // Préfère la ref complète si présente, sinon le cNodeName
+                            const std::string cnRef = !t.connectivityNodeRef.empty()
+                                                          ? t.connectivityNodeRef
+                                                          : t.cNodeName;
+                            if (!cnRef.empty())
+                                w.key("cn").value(cnRef);
+                            w.endObject();
+                        }
+                        w.endArray(); // terminals
+
+                        // LNodeRefs (utile pour relier primaire ↔ IED/LN)
+                        if (!ce.lnodes.empty()) {
+                            w.key("lnodes").beginArray();
+                            for (const auto& lr : ce.lnodes) {
+                                w.beginObject();
+                                if (!lr.iedName.empty()) w.key("ied").value(lr.iedName);
+                                if (!lr.ldInst.empty())  w.key("ld").value(lr.ldInst);
+                                if (!lr.prefix.empty())  w.key("prefix").value(lr.prefix);
+                                if (!lr.lnClass.empty()) w.key("lnClass").value(lr.lnClass);
+                                if (!lr.lnInst.empty())  w.key("lnInst").value(lr.lnInst);
+                                w.endObject();
+                            }
+                            w.endArray();
+                        }
+
+                        w.endObject(); // equipment
+                    }
+                    w.endArray(); // equipments
+
+                    w.endObject(); // bay
+                }
+                w.endArray(); // bays
+
+                w.endObject(); // vlevel
             }
-            os << "]}";
+            w.endArray(); // vlevels
+
+            w.endObject(); // substation
         }
-        os << "]}";
     }
-    os << "]}";
-    return os.str();
+
+    w.endArray(); // substations
+    w.endObject();
+    return w.str();
 }
 
 std::string SclManager::toJsonNetwork() const {
-    std::ostringstream os;
-    os << "{""subnetworks"":"
-       << "[";
-    if (!model_) {
-        os << "]}";
-        return os.str();
-    }
-    bool firstSN = true;
-    for (const auto &sn : model_->communication.subNetworks) {
-        if (!firstSN)
-            os << ",";
-        firstSN = false;
-        os << "{""name"":"
-           << '"' << jsonEscape(sn.name) << '"'
-           << ",""type"":"
-           << '"' << jsonEscape(sn.type) << '"'
-           << ",""connectedAPs"":"
-           << "[";
-        bool firstCAP = true;
-        for (const auto &cap : sn.connectedAPs) {
-            if (!firstCAP)
-                os << ",";
-            firstCAP = false;
-            os << "{""ied"":"
-               << '"' << jsonEscape(cap.iedName) << '"'
-               << ",""ap"":"
-               << '"' << jsonEscape(cap.apName) << '"'
-               << ",""gses"":"
-               << "[";
-            bool firstG = true;
-            for (const auto &g : cap.gses) {
-                if (!firstG)
-                    os << ",";
-                firstG = false;
-                os << "{""ld"":""\n"
-                   << jsonEscape(g.ldInst)
-                   << "\n"",""cb"":""\n"
-                   << jsonEscape(g.cbName)
-                   << "\n""}";
+    JsonWriter w;
+    w.beginObject();
+    w.key("subnetworks").beginArray();
+
+    if (model_) {
+        for (const auto& sn : model_->communication.subNetworks) {
+            w.beginObject();
+            w.key("name").value(sn.name);
+            w.key("type").value(sn.type);
+
+            // (optionnel) propriétés réseau sous SubNetwork (si tu les renseignes dans SclTypes)
+            if (!sn.props.empty()) {
+                w.key("props").beginObject();
+                for (const auto& kv : sn.props) {
+                    w.key(kv.first).value(kv.second);
+                }
+                w.endObject();
             }
-            os << "],""smvs"":"
-               << "[";
-            bool firstS = true;
-            for (const auto &v : cap.smvs) {
-                if (!firstS)
-                    os << ",";
-                firstS = false;
-                os << "{" "ld" ":" "\n"
-                   << jsonEscape(v.ldInst)
-                   << "\n"",""cb"":""\n"
-                   << jsonEscape(v.cbName)
-                   << "\n""}";
+
+            // ConnectedAP
+            w.key("connectedAPs").beginArray();
+            for (const auto& cap : sn.connectedAPs) {
+                w.beginObject();
+                w.key("ied").value(cap.iedName);
+                w.key("ap").value(cap.apName);
+
+                // Address du ConnectedAP (P fields)
+                if (!cap.address.empty()) {
+                    w.key("address").beginObject();
+                    for (const auto& kv : cap.address) {
+                        w.key(kv.first).value(kv.second);
+                    }
+                    w.endObject();
+                }
+
+                // GSE (GOOSE)
+                w.key("gses").beginArray();
+                for (const auto& g : cap.gses) {
+                    w.beginObject();
+                    w.key("ld").value(g.ldInst);
+                    w.key("cb").value(g.cbName);
+                    if (!g.address.empty()) {
+                        w.key("address").beginObject();
+                        for (const auto& kv : g.address) {
+                            w.key(kv.first).value(kv.second);
+                        }
+                        w.endObject();
+                    }
+                    w.endObject();
+                }
+                w.endArray();
+
+                // SMV (Sampled Values)
+                w.key("smvs").beginArray();
+                for (const auto& v : cap.smvs) {
+                    w.beginObject();
+                    w.key("ld").value(v.ldInst);
+                    w.key("cb").value(v.cbName);
+                    if (!v.address.empty()) {
+                        w.key("address").beginObject();
+                        for (const auto& kv : v.address) {
+                            w.key(kv.first).value(kv.second);
+                        }
+                        w.endObject();
+                    }
+                    w.endObject();
+                }
+                w.endArray();
+
+                w.endObject(); // ConnectedAP
             }
-            os << "]}";
+            w.endArray(); // connectedAPs
+
+            w.endObject(); // SubNetwork
         }
-        os << "]}";
     }
-    os << "]}";
-    return os.str();
+
+    w.endArray(); // subnetworks
+    w.endObject();
+    return w.str();
 }

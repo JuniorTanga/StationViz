@@ -1,34 +1,39 @@
-#include <iostream>
-#include <QDebug>
-#include "core/scl/SclManager.h"
+#include <QGuiApplication>
+#include <QQmlApplicationEngine>
+#include <QQmlContext>
+#include <QFileInfo>
 
-int main(int argc, char **argv) {
+#include "SldFacade.h"
 
-    const std::string path = "test.scd";
+int main(int argc, char *argv[]) {
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+    QGuiApplication::setHighDpiScaleFactorRoundingPolicy(Qt::HighDpiScaleFactorRoundingPolicy::PassThrough);
+#endif
+    QGuiApplication app(argc, argv);
 
-    scl::SclManager mgr;
-    auto st = mgr.loadScl(path);
-    if (!st) {
-        std::cerr << "Failed to load SCL: " << st.error().message << "";
-        return 2;
+    QQmlApplicationEngine engine;
+
+    // Exposer SldFacade au QML
+    auto* facade = new SldFacade(&app);
+    engine.rootContext()->setContextProperty("sldFacade", facade);
+    facade->planJson();
+
+    // Passer un chemin initial (optionnel) depuis la ligne de commande
+    QString initialPath;
+    if (argc > 1) {
+        QFileInfo fi(QString::fromLocal8Bit(argv[1]));
+        if (fi.exists()) initialPath = fi.absoluteFilePath();
     }
+    engine.rootContext()->setContextProperty("initialSclPath", initialPath);
 
-    std::cout << "=== Substations ===\n";
-    mgr.printSubstations();
-    std::cout << "=== IEDs ===\n";
-    mgr.printIEDs();
-    std::cout << "=== Communication ===\n";
-    mgr.printCommunication();
-    std::cout << "=== Topology (CE -> CN) ===\n";
-    mgr.printTopology();
+    // Charger Main.qml depuis le répertoire courant
+    const QUrl url = QUrl::fromLocalFile(QStringLiteral("ui/Main.qml"));
+    QObject::connect(&engine, &QQmlApplicationEngine::objectCreated, &app,
+                     [url](QObject *obj, const QUrl &objUrl) {
+                         if (!obj && url == objUrl) QCoreApplication::exit(-1);
+                     }, Qt::QueuedConnection);
 
-    std::cout << "=== JSON (Substations) ===\n" << mgr.toJsonSubstations() << "";
-    std::cout << "=== JSON (Network) ===\n" << mgr.toJsonNetwork() << "";
+    engine.load(url);
 
-    // Exemple: résolution d'un LNodeRef venu d'un CE
-    if (auto ssRes = mgr.findSubstation("SS1")) {
-        // rien de spécifique ici; juste démonstration d'appel
-    }
-
-    return 0;
+    return app.exec();
 }

@@ -13,11 +13,42 @@ struct ScalarWithUnit {
     std::string multiplier;  // ex: "k", "m", "M" (IEC 61850 SI multiplier)
 };
 
+struct TerminalRef {
+    std::string name;
+    std::string cNodeName;        // ex: CONNECTIVITY_NODE83
+    std::string connectivityPath; // ex: ".../S1 380kV/BAY_T4_2/CONNECTIVITY_NODE83"
+    std::string substationName;   // ex: "Sub1"
+};
+
 // --- Topologie primaire (Substation)
 struct Terminal {
     std::string name;                 // @name
     std::string connectivityNodeRef;  // @connectivityNode (chemin) si présent
     std::string cNodeName;            // @cNodeName (ancienne forme)
+};
+
+struct TapChangerInfo {
+    std::string name;
+    std::string type; // "LTC", "DETC", etc.
+};
+
+struct TransformerWinding {
+    std::string name;             // T4_1
+    std::string type;             // PTW
+    std::vector<TerminalRef> terminals;
+    std::optional<TapChangerInfo> tapChanger;
+    // Résolution post-parse :
+    struct ResolvedEnd {
+        std::string ss, vl, bay, cn; // CN logique
+    };
+    std::vector<ResolvedEnd> resolvedEnds; // taille = terminals.size()
+};
+
+struct PowerTransformer {
+    std::string name;             // T4
+    std::string desc;
+    std::string type;             // PTR
+    std::vector<TransformerWinding> windings;
 };
 
 struct ConnectivityNode {
@@ -58,7 +89,12 @@ struct VoltageLevel {
 struct Substation {
     std::string name;       // @name
     std::vector<VoltageLevel> vlevels;
+    std::vector<PowerTransformer> powerTransformers;
     std::vector<LNodeRef> lnodes;          // <LNode> sous Substation
+};
+
+struct CNAddress {
+    std::string ss, vl, bay, cn;
 };
 
 // --- IED / LDevice / LN
