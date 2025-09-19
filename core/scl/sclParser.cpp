@@ -4,6 +4,81 @@
 
 using namespace scl;
 
+// MODIFIED: SclParser.cpp (ajouts helpers LN0)
+
+static void readDataSetsUnderLN0(const pugi::xml_node& ln0, std::vector<DataSet>& out) {
+    for (auto ds : ln0.children("DataSet")) {
+        DataSet D{};
+        D.name = ds.attribute("name").as_string("");
+        for (auto f : ds.children("FCDA")) {
+            FcdaRef r{};
+            r.ldInst = f.attribute("ldInst").as_string("");      // optionnel
+            r.lnClass = f.attribute("lnClass").as_string("");
+            r.lnInst = f.attribute("lnInst").as_string("");
+            r.doName = f.attribute("doName").as_string("");
+            r.daName = f.attribute("daName").as_string("");
+            r.fc = f.attribute("fc").as_string("");
+            D.members.push_back(std::move(r));
+        }
+        out.push_back(std::move(D));
+    }
+}
+
+static void readGseCtrlsUnderLN0(const pugi::xml_node& ln0, std::vector<GseControlMeta>& out) {
+    for (auto gse : ln0.children("GSEControl")) {
+        GseControlMeta G{};
+        G.name = gse.attribute("name").as_string("");
+        G.datSet = gse.attribute("datSet").as_string("");
+        G.appID = gse.attribute("appID").as_string(""); // parfois non utilisé ici
+        out.push_back(std::move(G));
+    }
+}
+
+static void readSmvCtrlsUnderLN0(const pugi::xml_node& ln0, std::vector<SmvControlMeta>& out) {
+    for (auto sv : ln0.children("SampledValueControl")) {
+        SmvControlMeta V{};
+        V.name = sv.attribute("name").as_string("");
+        V.datSet = sv.attribute("datSet").as_string("");
+        V.appID = sv.attribute("smvID").as_string(""); // alias selon profils
+        out.push_back(std::move(V));
+    }
+}
+
+// MODIFIED: readLogicalNodes -> on laisse comme avant pour LN*, LN0 est traité dans readLDevicesUnder
+
+static void readLDevicesUnder(const pugi::xml_node &parent,
+                              std::vector<LogicalDevice> &out) {
+    for (auto ld : parent.children("LDevice")) {
+        LogicalDevice d{};
+        d.inst = ld.attribute("inst").as_string("");
+
+        // LN0 meta (DataSet/GSEControl/SMVControl)
+        if (auto ln0 = ld.child("LN0")) {
+            readDataSetsUnderLN0(ln0, d.ln0.datasets);
+            readGseCtrlsUnderLN0(ln0, d.ln0.gseCtrls);
+            readSmvCtrlsUnderLN0(ln0, d.ln0.smvCtrls);
+
+            // Et on pousse LN0 comme LogicalNode (inst = "")
+            LogicalNode ln{};
+            ln.prefix = ln0.attribute("prefix").as_string("");
+            ln.lnClass = ln0.attribute("lnClass").as_string("");
+            ln.inst = "";
+            d.lns.push_back(std::move(ln));
+        }
+
+        // LN*
+        for (auto lnNode : ld.children("LN")) {
+            LogicalNode l{};
+            l.prefix = lnNode.attribute("prefix").as_string("");
+            l.lnClass = lnNode.attribute("lnClass").as_string("");
+            l.inst = lnNode.attribute("inst").as_string("");
+            d.lns.push_back(std::move(l));
+        }
+
+        out.push_back(std::move(d));
+    }
+}
+
 // scl/PathUtils.h
 inline std::optional<CNAddress> parseConnectivityPath(const std::string& path) {
     // format attendu: ".../<VL>/<BAY>/<CONNECTIVITY_NODEXX>"

@@ -12,34 +12,45 @@ QString SldFacade::loadScl(const QString& path) {
         emit errorOccurred(msg);
         return msg;
     }
+
+    std::cout << "\n\n SUBSTATION : \n\n";
+    sclMgr_->printSubstations();
+    std::cout << "\n\n Communications : \n\n";
+    sclMgr_->printCommunication();
+    std::cout << "\n\n IEDs : \n\n" ;
+    sclMgr_->printIEDs();
+    std::cout << "\n\n Topology : \n\n";
+    sclMgr_->printTopology();
+
     return {};
 }
 
 QString SldFacade::buildSld() {
-    if (!sclMgr_ || !sclMgr_->model()) {
-        const QString msg = "SCL not loaded";
+    try {
+        if (!sclMgr_ || !sclMgr_->model()) {
+            emit errorOccurred("SCL not loaded");
+            return "SCL not loaded";
+        }
+        sld::HeuristicsConfig cfg;
+        sldMgr_ = std::make_unique<sld::SldManager>(sclMgr_->model(), cfg);
+        auto st = sldMgr_->build();
+        if (!st) {
+            const QString msg = QString::fromStdString(st.error().message);
+            emit errorOccurred(msg);
+            return msg;
+        }
+        std::cout <<  "\n Log PlanJson \n" << sldMgr_->planJson();
+        ready_ = true;
+        emit readyChanged();
+        return {};
+    } catch (const std::exception &e) {
+        const QString msg = QString("Exception: ") + e.what();
         emit errorOccurred(msg);
         return msg;
+    } catch (...) {
+        emit errorOccurred("Unknown exception in buildSld()");
+        return "Unknown exception";
     }
-
-    sld::HeuristicsConfig cfg; // par défaut; peut être exposé plus tard si besoin
-    sldMgr_ = std::make_unique<sld::SldManager>(sclMgr_->model(), cfg);
-
-    auto st = sldMgr_->build();
-    if (!st) {
-        const QString msg = QString::fromStdString(st.error().message);
-        emit errorOccurred(msg);
-        return msg;
-    }
-
-    ready_ = true;
-    emit readyChanged();
-    //pour debuggage
-    sldMgr_->printCondensed();
-    sldMgr_->printCouplers();
-    sldMgr_->printFeeders();
-    std::cout << "\n PlanJson log : \n" << sldMgr_->planJson();
-    return {};
 }
 
 QString SldFacade::reload(const QString& path) {

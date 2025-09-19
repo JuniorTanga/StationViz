@@ -8,6 +8,7 @@ add_library(sclLib
     SclTypes.h
     Result.h
     JsonWriter.h
+    Internet.h
 )
 
 add_subdirectory(pugixml)

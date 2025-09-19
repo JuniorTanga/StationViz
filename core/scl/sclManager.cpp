@@ -1,10 +1,40 @@
 #include "SclManager.h"
 #include "SclParser.h"
-#include "JsonWriter.h"
+//#include "JsonWriter.h" //remplacer par nlohmannJson
+#include "nlohmannJson/json.hpp"
 #include <iostream>
 #include <sstream>
 
 using namespace scl;
+using nlohmann::json;
+
+//=======HELPERS=========//
+static std::string keyGse(const std::string& ied, const std::string& ld, const std::string& cb){
+    return ied + "|" + ld + "|" + cb;
+}
+static std::string keyMms(const std::string& ied, const std::string& ap){
+    return ied + "|" + ap;
+}
+
+static std::string logicalCNKey(std::string_view ss, std::string_view vl,
+                                std::string_view bay, std::string_view cn) {
+    std::string out; out.reserve(ss.size()+vl.size()+bay.size()+cn.size()+3);
+    out.append(ss); out.push_back(':');
+    out.append(vl); out.push_back(':');
+    out.append(bay); out.push_back(':');
+    out.append(cn);
+    return out;
+}
+
+// Récupère le dernier segment d'un chemin "A/B/C"
+static std::string lastSegment(const std::string &path) {
+    auto pos = path.find_last_of('/');
+    if (pos == std::string::npos)
+        return path;
+    return path.substr(pos + 1);
+}
+
+//========================//
 
 SclManager::SclManager() = default;
 
@@ -23,27 +53,182 @@ Status SclManager::loadScl(const std::string &filepath) {
 void SclManager::buildIndexes_() {
     iedByName_.clear();
     cnByPath_.clear();
+    mapCNByLogical_.clear();
+    mapCNByFullToLogical_.clear();
+    mapCNSuffix_.clear();
+    lnodesByPrimary_.clear();
+    primaryByLref_.clear();
+    gseEndpoints_.clear();
+    svEndpoints_.clear();
+    mmsEndpoints_.clear();
+    diags_.clear();
 
-    if (!model_)
-        return;
-    for (const auto &i : model_->ieds) {
-        iedByName_[i.name] = &i;
+    if (!model_) return;
+
+    // --- IED index
+    for (const auto &i : model_->ieds) iedByName_[i.name] = &i;
+
+    // --- CN indexes (logique, full, suffix)
+    for (const auto &ss : model_->substations) {
+        auto ss_i = interner_.intern(ss.name);
+        for (const auto &vl : ss.vlevels) {
+            auto vl_i = interner_.intern(vl.name);
+            for (const auto &bay : vl.bays) {
+                auto bay_i = interner_.intern(bay.name);
+                for (const auto &cn : bay.connectivityNodes) {
+                    const std::string full =
+                        !cn.pathName.empty()
+                            ? cn.pathName
+                            : (std::string(ss_i) + "/" + std::string(vl_i) + "/" + std::string(bay_i) + "/" + cn.name);
+                    const std::string logical = logicalCNKey(ss_i, vl_i, bay_i, cn.name);
+
+                    cnByPath_[full] = &cn;
+                    mapCNByLogical_[logical] = full;
+                    mapCNByFullToLogical_[full] = logical;
+
+                    auto suffix = lastSegment(full);
+                    mapCNSuffix_[suffix].push_back(full);
+                }
+
+                // LNode sous Bay (et idem sous CE/VL/SS) -> mapping primaire
+                for (const auto& lr : bay.lnodes) {
+                    const std::string primaryKey = logicalCNKey(ss_i, vl_i, bay_i, "<BAY>");
+                    lnodesByPrimary_[primaryKey].push_back(lr);
+
+                    // clé lref : ied|ld|prefix+class+inst
+                    std::string lrefKey = lr.iedName + "|" + lr.ldInst + "|" + lr.prefix + lr.lnClass + lr.lnInst;
+                    primaryByLref_[lrefKey].push_back(primaryKey);
+                }
+                for (const auto& ce : bay.equipments) {
+                    const std::string primaryKey = logicalCNKey(ss_i, vl_i, bay_i, "CE:"+ce.name);
+                    for (const auto& lr : ce.lnodes) {
+                        lnodesByPrimary_[primaryKey].push_back(lr);
+                        std::string lrefKey = lr.iedName + "|" + lr.ldInst + "|" + lr.prefix + lr.lnClass + lr.lnInst;
+                        primaryByLref_[lrefKey].push_back(primaryKey);
+                    }
+                }
+            }
+            // LNode sous VoltageLevel
+            for (const auto& lr : vl.lnodes) {
+                const std::string pk = logicalCNKey(ss_i, vl_i, "<VL>", "<VL>");
+                lnodesByPrimary_[pk].push_back(lr);
+                std::string lrefKey = lr.iedName + "|" + lr.ldInst + "|" + lr.prefix + lr.lnClass + lr.lnInst;
+                primaryByLref_[lrefKey].push_back(pk);
+            }
+        }
+        // LNode sous Substation
+        for (const auto& lr : ss.lnodes) {
+            const std::string pk = logicalCNKey(ss_i, "<SS>", "<SS>", "<SS>");
+            lnodesByPrimary_[pk].push_back(lr);
+            std::string lrefKey = lr.iedName + "|" + lr.ldInst + "|" + lr.prefix + lr.lnClass + lr.lnInst;
+            primaryByLref_[lrefKey].push_back(pk);
+        }
     }
 
-    // Index des ConnectivityNode par path
-    for (const auto &ss : model_->substations) {
-        for (const auto &vl : ss.vlevels) {
-            for (const auto &bay : vl.bays) {
-                for (const auto &cn : bay.connectivityNodes) {
-                    std::string path =
-                        !cn.pathName.empty()
-                                           ? cn.pathName
-                                           : (ss.name + "/" + vl.name + "/" + bay.name + "/" + cn.name);
-                    cnByPath_[path] = &cn;
-                }
+    // --- Endpoints MMS (ConnectedAP Address)
+    for (const auto& sn : model_->communication.subNetworks) {
+        for (const auto& cap : sn.connectedAPs) {
+            MmsEndpoint me{};
+            me.iedName = cap.iedName; me.apName = cap.apName;
+            auto it_ip = cap.address.find("IP");
+            if (it_ip != cap.address.end()) me.ip = it_ip->second;
+            auto it_pt = cap.address.find("Port");
+            me.port = (it_pt != cap.address.end()) ? it_pt->second : "102";
+            if (!me.ip.empty()) {
+                mmsEndpoints_[keyMms(me.iedName, me.apName)] = std::move(me);
             }
         }
     }
+
+    // --- Endpoints GSE/SMV = (ConnectedAP.GSE/SMV) + LN0 ControlBlocks -> DataSet ref
+    // mapping (ied, ldInst) -> LD (pour retrouver ln0 metas)
+    auto findLD = [&](const std::string& iedName, const std::string& ldInst)->const LogicalDevice* {
+        auto it = iedByName_.find(iedName);
+        if (it == iedByName_.end()) return nullptr;
+        return findLD_(*it->second, ldInst);
+    };
+    // helpers address
+    auto getP = [](const std::unordered_map<std::string,std::string>& a, const char* k)->std::string{
+        auto it = a.find(k); return it==a.end()? "" : it->second;
+    };
+
+    for (const auto& sn : model_->communication.subNetworks) {
+        for (const auto& cap : sn.connectedAPs) {
+            // GOOSE
+            for (const auto& g : cap.gses) {
+                GseEndpoint e{};
+                e.iedName = cap.iedName; e.ldInst = g.ldInst; e.cbName = g.cbName;
+                e.mac     = getP(g.address, "MAC-Address");
+                e.appid   = getP(g.address, "APPID");
+                e.vlanId  = getP(g.address, "VLAN-ID");
+                e.vlanPrio= getP(g.address, "VLAN-PRIORITY");
+
+                // datasetRef depuis LN0.GSEControl[name=cbName]
+                if (auto ld = findLD(e.iedName, e.ldInst)) {
+                    for (const auto& cb : ld->ln0.gseCtrls) {
+                        if (cb.name == e.cbName) { e.datasetRef = cb.datSet; break; }
+                    }
+                    if (e.datasetRef.empty()) {
+                        diags_.push_back({ErrorCode::InvalidPath,
+                                          "LN0.GSEControl",
+                                          "Dataset introuvable pour GSEControl: " + e.cbName,
+                                          "Vérifie LN0/GSEControl@name et @datSet"});
+                    }
+                } else {
+                    diags_.push_back({ErrorCode::InvalidPath,
+                                      "ConnectedAP.GSE",
+                                      "LDevice introuvable: " + e.ldInst + " sur IED " + e.iedName,
+                                      "Contrôle ldInst côté Communication vs IED/Server/LDevice"});
+                }
+                gseEndpoints_[keyGse(e.iedName, e.ldInst, e.cbName)] = std::move(e);
+            }
+
+            // SMV
+            for (const auto& v : cap.smvs) {
+                SvEndpoint e{};
+                e.iedName = cap.iedName; e.ldInst = v.ldInst; e.cbName = v.cbName;
+                e.mac     = getP(v.address, "MAC-Address");
+                e.appid   = getP(v.address, "APPID");
+                e.vlanId  = getP(v.address, "VLAN-ID");
+                e.vlanPrio= getP(v.address, "VLAN-PRIORITY");
+                e.smpRate = getP(v.address, "SmpRate"); // si présent dans Address
+
+                if (auto ld = findLD(e.iedName, e.ldInst)) {
+                    for (const auto& cb : ld->ln0.smvCtrls) {
+                        if (cb.name == e.cbName) { e.datasetRef = cb.datSet; break; }
+                    }
+                    if (e.datasetRef.empty()) {
+                        diags_.push_back({ErrorCode::InvalidPath,
+                                          "LN0.SampledValueControl",
+                                          "Dataset introuvable pour SMV Control: " + e.cbName,
+                                          "Vérifie LN0/SampledValueControl@name et @datSet"});
+                    }
+                } else {
+                    diags_.push_back({ErrorCode::InvalidPath,
+                                      "ConnectedAP.SMV",
+                                      "LDevice introuvable: " + e.ldInst + " sur IED " + e.iedName,
+                                      "Contrôle ldInst côté Communication vs IED/Server/LDevice"});
+                }
+                svEndpoints_[keyGse(e.iedName, e.ldInst, e.cbName)] = std::move(e);
+            }
+        }
+    }
+}
+
+bool SclManager::matchCN(const std::string& a, const std::string& b) const {
+    if (a == b) return true;
+    // tolérant: compare le dernier segment / suffixes
+    auto la = lastSegment(a);
+    auto lb = lastSegment(b);
+    if (la == lb) return true;
+
+    // si l'un est logique, l'autre full -> normaliser
+    auto itA = mapCNByFullToLogical_.find(a);
+    auto itB = mapCNByFullToLogical_.find(b);
+    if (itA != mapCNByFullToLogical_.end() && itB != mapCNByFullToLogical_.end())
+        return itA->second == itB->second;
+
+    return false;
 }
 
 Status SclManager::printSubstations() const {
@@ -321,184 +506,149 @@ static std::string jsonEscape(const std::string &s) {
   return o;
 }
 
+
+
+//=========JSON API=========//
+
 std::string SclManager::toJsonSubstations() const {
-    JsonWriter w;
-    w.beginObject();
-    w.key("substations").beginArray();
+    json root;
+    root["substations"] = json::array();
 
     if (model_) {
         for (const auto& ss : model_->substations) {
-            w.beginObject();
-            w.key("name").value(ss.name);
-
-            // VoltageLevels
-            w.key("vlevels").beginArray();
+            json jss;
+            jss["name"] = ss.name;
+            jss["vlevels"] = json::array();
             for (const auto& vl : ss.vlevels) {
-                w.beginObject();
-                w.key("name").value(vl.name);
-
+                json jvl;
+                jvl["name"] = vl.name;
                 if (vl.voltage) {
-                    w.key("voltage").beginObject();
-                    w.key("value").value(vl.voltage->value);
-                    w.key("unit").value(vl.voltage->unit);
-                    w.key("mult").value(vl.voltage->multiplier);
-                    w.endObject();
+                    jvl["voltage"] = {
+                        {"value", vl.voltage->value},
+                        {"unit", vl.voltage->unit},
+                        {"mult", vl.voltage->multiplier}
+                    };
                 }
-
-                // Bays
-                w.key("bays").beginArray();
+                jvl["bays"] = json::array();
                 for (const auto& bay : vl.bays) {
-                    w.beginObject();
-                    w.key("name").value(bay.name);
-
-                    // ConnectivityNodes (pratique pour le SLD)
-                    w.key("connectivityNodes").beginArray();
+                    json jbay; jbay["name"] = bay.name;
+                    jbay["connectivityNodes"] = json::array();
                     for (const auto& cn : bay.connectivityNodes) {
-                        w.beginObject();
-                        w.key("name").value(cn.name);
-                        if (!cn.pathName.empty())
-                            w.key("path").value(cn.pathName);
-                        w.endObject();
+                        json jcn;
+                        jcn["name"] = cn.name;
+                        if (!cn.pathName.empty()) jcn["path"] = cn.pathName;
+                        // expose aussi la forme logique
+                        std::string full = !cn.pathName.empty()
+                                               ? cn.pathName
+                                               : (ss.name + "/" + vl.name + "/" + bay.name + "/" + cn.name);
+                        auto it = mapCNByFullToLogical_.find(full);
+                        if (it != mapCNByFullToLogical_.end()) jcn["logical"] = it->second;
+                        jbay["connectivityNodes"].push_back(std::move(jcn));
                     }
-                    w.endArray();
-
-                    // Equipements
-                    w.key("equipments").beginArray();
+                    jbay["equipments"] = json::array();
                     for (const auto& ce : bay.equipments) {
-                        w.beginObject();
-                        w.key("name").value(ce.name);
-                        w.key("type").value(ce.type);
-
-                        // Terminals -> CN
-                        w.key("terminals").beginArray();
+                        json je;
+                        je["name"] = ce.name; je["type"] = ce.type;
+                        je["terminals"] = json::array();
                         for (const auto& t : ce.terminals) {
-                            w.beginObject();
-                            w.key("name").value(t.name);
-                            // Préfère la ref complète si présente, sinon le cNodeName
+                            json jt;
+                            jt["name"] = t.name;
                             const std::string cnRef = !t.connectivityNodeRef.empty()
                                                           ? t.connectivityNodeRef
-                                                          : t.cNodeName;
-                            if (!cnRef.empty())
-                                w.key("cn").value(cnRef);
-                            w.endObject();
+                                                          : (ss.name + "/" + vl.name + "/" + bay.name + "/" + t.cNodeName);
+                            jt["cn"] = cnRef;
+                            je["terminals"].push_back(std::move(jt));
                         }
-                        w.endArray(); // terminals
-
-                        // LNodeRefs (utile pour relier primaire ↔ IED/LN)
                         if (!ce.lnodes.empty()) {
-                            w.key("lnodes").beginArray();
+                            je["lnodes"] = json::array();
                             for (const auto& lr : ce.lnodes) {
-                                w.beginObject();
-                                if (!lr.iedName.empty()) w.key("ied").value(lr.iedName);
-                                if (!lr.ldInst.empty())  w.key("ld").value(lr.ldInst);
-                                if (!lr.prefix.empty())  w.key("prefix").value(lr.prefix);
-                                if (!lr.lnClass.empty()) w.key("lnClass").value(lr.lnClass);
-                                if (!lr.lnInst.empty())  w.key("lnInst").value(lr.lnInst);
-                                w.endObject();
+                                json jl;
+                                if (!lr.iedName.empty()) jl["ied"] = lr.iedName;
+                                if (!lr.ldInst.empty())  jl["ld"]  = lr.ldInst;
+                                if (!lr.prefix.empty())  jl["prefix"] = lr.prefix;
+                                if (!lr.lnClass.empty()) jl["lnClass"] = lr.lnClass;
+                                if (!lr.lnInst.empty())  jl["lnInst"]  = lr.lnInst;
+                                je["lnodes"].push_back(std::move(jl));
                             }
-                            w.endArray();
                         }
-
-                        w.endObject(); // equipment
+                        jbay["equipments"].push_back(std::move(je));
                     }
-                    w.endArray(); // equipments
-
-                    w.endObject(); // bay
+                    jvl["bays"].push_back(std::move(jbay));
                 }
-                w.endArray(); // bays
-
-                w.endObject(); // vlevel
+                jss["vlevels"].push_back(std::move(jvl));
             }
-            w.endArray(); // vlevels
-
-            w.endObject(); // substation
+            root["substations"].push_back(std::move(jss));
         }
     }
-
-    w.endArray(); // substations
-    w.endObject();
-    return w.str();
+    return root.dump();
 }
 
 std::string SclManager::toJsonNetwork() const {
-    JsonWriter w;
-    w.beginObject();
-    w.key("subnetworks").beginArray();
+    json root;
+    root["subnetworks"] = json::array();
 
     if (model_) {
         for (const auto& sn : model_->communication.subNetworks) {
-            w.beginObject();
-            w.key("name").value(sn.name);
-            w.key("type").value(sn.type);
+            json jsn; jsn["name"] = sn.name; jsn["type"] = sn.type;
 
-            // (optionnel) propriétés réseau sous SubNetwork (si tu les renseignes dans SclTypes)
             if (!sn.props.empty()) {
-                w.key("props").beginObject();
-                for (const auto& kv : sn.props) {
-                    w.key(kv.first).value(kv.second);
-                }
-                w.endObject();
+                jsn["props"] = json::object();
+                for (const auto& kv : sn.props) jsn["props"][kv.first] = kv.second;
             }
 
-            // ConnectedAP
-            w.key("connectedAPs").beginArray();
+            jsn["connectedAPs"] = json::array();
             for (const auto& cap : sn.connectedAPs) {
-                w.beginObject();
-                w.key("ied").value(cap.iedName);
-                w.key("ap").value(cap.apName);
+                json jcap; jcap["ied"] = cap.iedName; jcap["ap"] = cap.apName;
 
-                // Address du ConnectedAP (P fields)
                 if (!cap.address.empty()) {
-                    w.key("address").beginObject();
-                    for (const auto& kv : cap.address) {
-                        w.key(kv.first).value(kv.second);
-                    }
-                    w.endObject();
+                    jcap["address"] = json::object();
+                    for (const auto& kv : cap.address) jcap["address"][kv.first] = kv.second;
                 }
 
-                // GSE (GOOSE)
-                w.key("gses").beginArray();
+                // GSE
+                jcap["gses"] = json::array();
                 for (const auto& g : cap.gses) {
-                    w.beginObject();
-                    w.key("ld").value(g.ldInst);
-                    w.key("cb").value(g.cbName);
+                    json jg;
+                    jg["ld"] = g.ldInst; jg["cb"] = g.cbName;
+                    auto it = gseEndpoints_.find(keyGse(cap.iedName, g.ldInst, g.cbName));
+                    if (it != gseEndpoints_.end()) {
+                        jg["endpoint"] = {
+                            {"mac", it->second.mac}, {"appid", it->second.appid},
+                            {"vlanId", it->second.vlanId}, {"vlanPrio", it->second.vlanPrio},
+                            {"dataset", it->second.datasetRef}
+                        };
+                    }
                     if (!g.address.empty()) {
-                        w.key("address").beginObject();
-                        for (const auto& kv : g.address) {
-                            w.key(kv.first).value(kv.second);
-                        }
-                        w.endObject();
+                        jg["address"] = json::object();
+                        for (const auto& kv : g.address) jg["address"][kv.first] = kv.second;
                     }
-                    w.endObject();
+                    jcap["gses"].push_back(std::move(jg));
                 }
-                w.endArray();
 
-                // SMV (Sampled Values)
-                w.key("smvs").beginArray();
+                // SMV
+                jcap["smvs"] = json::array();
                 for (const auto& v : cap.smvs) {
-                    w.beginObject();
-                    w.key("ld").value(v.ldInst);
-                    w.key("cb").value(v.cbName);
-                    if (!v.address.empty()) {
-                        w.key("address").beginObject();
-                        for (const auto& kv : v.address) {
-                            w.key(kv.first).value(kv.second);
-                        }
-                        w.endObject();
+                    json jv;
+                    jv["ld"] = v.ldInst; jv["cb"] = v.cbName;
+                    auto it = svEndpoints_.find(keyGse(cap.iedName, v.ldInst, v.cbName));
+                    if (it != svEndpoints_.end()) {
+                        jv["endpoint"] = {
+                            {"mac", it->second.mac}, {"appid", it->second.appid},
+                            {"vlanId", it->second.vlanId}, {"vlanPrio", it->second.vlanPrio},
+                            {"smpRate", it->second.smpRate}, {"dataset", it->second.datasetRef}
+                        };
                     }
-                    w.endObject();
+                    if (!v.address.empty()) {
+                        jv["address"] = json::object();
+                        for (const auto& kv : v.address) jv["address"][kv.first] = kv.second;
+                    }
+                    jcap["smvs"].push_back(std::move(jv));
                 }
-                w.endArray();
 
-                w.endObject(); // ConnectedAP
+                jsn["connectedAPs"].push_back(std::move(jcap));
             }
-            w.endArray(); // connectedAPs
-
-            w.endObject(); // SubNetwork
+            root["subnetworks"].push_back(std::move(jsn));
         }
     }
-
-    w.endArray(); // subnetworks
-    w.endObject();
-    return w.str();
+    return root.dump();
 }

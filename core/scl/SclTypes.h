@@ -104,10 +104,69 @@ struct LogicalNode {
     std::string inst;    // @inst (LN0 a inst = "")
 };
 
-struct LogicalDevice {
-    std::string inst;               // @inst
-    std::vector<LogicalNode> lns;   // LN0 + LN*
+struct GseControlMeta {
+    std::string name;    // @name
+    std::string datSet;  // @datSet (nom du DataSet)
+    std::string appID;   // optionnel (certaines variantes)
 };
+
+struct SmvControlMeta {
+    std::string name;
+    std::string datSet;
+    std::string appID;   // optionnel
+    std::string smpRate; // optionnel (via P dans Address réseau, sinon logger)
+};
+
+// --- LN0 / DataSet / Controls (métadonnées minimales)
+struct FcdaRef {
+    std::string ldInst;    // optionnel si scope LN0 implicite
+    std::string lnClass;   // ex: XCBR
+    std::string lnInst;    // ex: 1
+    std::string doName;    // ex: Pos
+    std::string daName;    // ex: stVal (optionnel)
+    std::string fc;        // ex: ST/MX/CO
+};
+
+struct DataSet {
+    std::string name;
+    std::vector<FcdaRef> members;
+};
+
+struct Ln0Info {
+    std::vector<DataSet> datasets;
+    std::vector<GseControlMeta> gseCtrls;
+    std::vector<SmvControlMeta> smvCtrls;
+};
+
+struct LogicalDevice {
+    std::string inst;
+    std::vector<LogicalNode> lns; // inchangé
+    Ln0Info ln0;                  // NEW: metas de LN0
+};
+
+
+// --- Endpoints (index réseau prêts pour network core)
+struct GseEndpoint {
+    std::string iedName, ldInst, cbName;
+    std::string mac, appid, vlanId, vlanPrio;
+    std::string datasetRef; // nom du DataSet sur LN0
+};
+
+struct SvEndpoint {
+    std::string iedName, ldInst, cbName;
+    std::string mac, appid, vlanId, vlanPrio;
+    std::string smpRate;
+    std::string datasetRef;
+};
+
+struct MmsEndpoint {
+    std::string iedName, apName;
+    std::string ip;
+    std::string port; // "102" par défaut si absent
+    // (ajoute d'autres P OSI si dispo)
+};
+
+
 
 struct AccessPoint {
     std::string name;       // @name
@@ -179,5 +238,6 @@ struct ResolvedLNode {
     const LogicalDevice* ld {nullptr};
     const LogicalNode* ln {nullptr};
 };
+
 
 } // namespace scl
