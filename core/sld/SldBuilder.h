@@ -1,96 +1,77 @@
 #pragma once
 #include "SldTypes.h"
+#include "SldConfig.h"
+#include <nlohmann/json.hpp>
 
 namespace sld {
 
 class SldBuilder {
 public:
-    explicit SldBuilder(const scl::SclModel *model,
-                        const HeuristicsConfig &cfg = {});
+    explicit SldBuilder(const scl::SclModel* model,
+                        const HeuristicsConfig& cfg = {});
 
-    // 1) Graphe biparti CE↔CN
-    scl::Status buildRaw(Graph &out) const;
+    // 1) Raw: CE <-> CN
+    scl::Status buildRaw(BoostGraph& g, Index& idx) const;
 
-    // 2) Clustering des CN de bus & condensation Bus + Equipment
-    scl::Status clusterAndCondense(const Graph &raw, Graph &out,
-                                   std::vector<BusCluster> &clusters) const;
+    // 2) Cluster Bus CNs & condense to Equip <-> Bus
+    scl::Status clusterAndCondense(const BoostGraph& raw, const Index& rawIdx,
+                                   BoostGraph& condensed, Index& cIdx,
+                                   std::vector<BusCluster>& clusters) const;
 
-    // 3) Détection des couplers / feeders / transformers et plan de layout
-    SldPlan makePlan(const Graph &condensed,
-                     const std::vector<BusCluster> &clusters) const;
+    // 3) Detect couplers / feeders / transformers
+    scl::Status detectCouplers(const BoostGraph& condensed, const Index& cIdx,
+                               const std::vector<BusCluster>& clusters,
+                               std::vector<BusCoupler>& out) const;
 
-    void integratePowerTransformers_(const std::vector<BusCluster>& clusters,
-                                     SldPlan& out) const;
+    scl::Status detectFeeders(const BoostGraph& raw, const Index& rawIdx,
+                              const BoostGraph& condensed, const Index& cIdx,
+                              const std::vector<BusCluster>& clusters,
+                              std::vector<Feeder>& out) const;
 
-    // JSON utilitaires
-    std::string toJson(const Graph &g) const;
-    std::string planToJson(const SldPlan &p) const;
+    scl::Status detectTransformers(const BoostGraph& raw, const Index& rawIdx,
+                                   const std::vector<BusCluster>& clusters,
+                                   std::vector<TransformerLink>& out) const;
 
-    // Utils
-    static EquipmentKind mapEquipmentKind(const std::string &ceType);
+    // 4) Build plan (ranks + transformers + add EquipFromIEDs)
+    scl::Status makePlan(const BoostGraph& raw, const Index& rawIdx,
+                         const BoostGraph& condensed, const Index& cIdx,
+                         const std::vector<BusCluster>& clusters,
+                         SldPlan& plan,
+                         const scl::SclManager* sclMgr) const;
 
-    // Détection coupler & feeders
-    void detectCouplers_(const Graph &condensed,
-                         const std::vector<BusCluster> &clusters,
-                         std::vector<BusCoupler> &out) const;
+    // mapping CE type / LN class to EquipmentKind
+    static EquipmentKind mapEquipmentKind(const std::string& ceType);
 
-    void detectFeeders_(const Graph &raw, const Graph &condensed,
-                        const std::vector<BusCluster> &clusters,
-                        std::vector<Feeder> &out) const;
-
-    void detectTransformers_(const Graph &raw,
-                             const std::vector<BusCluster> &clusters,
-                             std::vector<TransformerLink> &out) const;
+    // JSON
+    nlohmann::json toJsonRaw(const BoostGraph& g) const;
+    nlohmann::json toJsonCondensed(const BoostGraph& g) const;
+    nlohmann::json toJsonPlan(const SldPlan& p) const;
 
 private:
-    const scl::SclModel *model_{nullptr};
+    const scl::SclModel* model_{nullptr};
     HeuristicsConfig cfg_{};
 
-    // internes
+    // utils
+    static std::string keyVL(const std::string& ss, const std::string& vl);
+    static std::string makeCNIdAbs(const std::string& ss, const std::string& vl,
+                                   const std::string& bay, const std::string& name);
+    static std::string makeCEId(const std::string& ss, const std::string& vl,
+                                const std::string& bay, const std::string& ce);
+    static std::string makeBusId(const std::string& ss, const std::string& vl, int n);
+
     static std::string upper(std::string s);
-    static std::string keyVL(const std::string &ss, const std::string &vl);
+    bool isLikelyBusCN(const std::string& nameOrPath, int degree) const;
 
-    static NodeId makeCNId(const std::string &ss, const std::string &vl,
-                           const std::string &bay,
-                           const std::string &cnPathOrName);
-    static NodeId makeCEId(const std::string &ss, const std::string &vl,
-                           const std::string &bay, const std::string &ceName);
+    // create/find vertex by NodeId in a graph/index
+    static V ensureVertex(BoostGraph& g, Index& idx, const VertexProp& vp);
+    static std::optional<V> findVertex(const Index& idx, const NodeId& id);
 
-    static const char* edgeKindToString(EdgeKind k) {
-        switch (k) {
-        case EdgeKind::CE_to_CN:     return "CE_to_CN";
-        case EdgeKind::Equip_to_Bus: return "Equip_to_Bus";
-        case EdgeKind::CN_Merge:     return "CN_Merge";
-        }
-        return "?";
-    }
-
-    bool isLikelyBusCN(const std::string &cnNameOrPath, int degree) const;
-
-    // Union-Find pour cluster CN
-    struct DSU {
-        mutable std::unordered_map<NodeId, NodeId> p;
-        NodeId f(const NodeId &x) const {
-            auto it = p.find(x);
-            if (it == p.end() || it->second == x)
-                return it == p.end() ? x : it->second;
-            return p[x] = f(it->second);
-        }
-        void u(const NodeId &a, const NodeId &b) {
-            auto ra = f(a), rb = f(b);
-            if (ra != rb)
-                p[ra] = rb;
-        }
+    // raw adjacency views
+    struct RawAdj {
+        std::unordered_map<NodeId, std::vector<NodeId>> cnToCE;
+        std::unordered_map<NodeId, std::vector<NodeId>> ceToCN;
     };
-
-    // Aides à partir du graphe brut
-    struct RawView {
-        // adjacency
-        std::unordered_map<NodeId, std::vector<NodeId>> cnToCE; // CN -> CE*
-        std::unordered_map<NodeId, std::vector<NodeId>> ceToCN; // CE -> CN*
-    };
-
-    RawView buildRawView_(const Graph &raw) const;
+    RawAdj buildAdj(const BoostGraph& raw, const Index& idx) const;
 };
 
 } // namespace sld

@@ -1,0 +1,29 @@
+<RCC>
+    <qresource prefix="/">
+        <file>qtquickcontrols2.conf</file>
+        <file>App.qml</file>
+        <file>qml/pages/SldPage.qml</file>
+        <file>qml/pages/IedPage.qml</file>
+        <file>qml/components/SldToolbar.qml</file>
+        <file>qml/components/PropertyPanel.qml</file>
+        <file>qml/components/Legend.qml</file>
+        <file>qml/components/MiniMap.qml</file>
+        <file>qml/components/SldLabelsOverlay.qml</file>
+        <file>qml/components/IedCard.qml</file>
+        <file>qml/styles/Theme.qml</file>
+        <file>icons/equipment/busbar.svg</file>
+        <file>icons/equipment/transformer_2w.svg</file>
+        <file>icons/equipment/bay.svg</file>
+        <file>icons/equipment/cbr_closed.svg</file>
+        <file>icons/equipment/cbr_intermediate.svg</file>
+        <file>icons/equipment/cbr_opened.svg</file>
+        <file>icons/equipment/ds_closed.svg</file>
+        <file>icons/equipment/ds_opened.svg</file>
+        <file>icons/equipment/label.svg</file>
+        <file>icons/equipment/unknown.svg</file>
+        <file>qml/components/SegmentedTabs.qml</file>
+        <file>qml/styles/ThemeSettings.qml</file>
+        <file>common/Toast.qml</file>
+        <file>qml/components/SclOpenDialog.qml</file>
+    </qresource>
+</RCC>

@@ -1,6 +1,6 @@
 add_subdirectory(scl)
 add_subdirectory(sld)
-add_subdirectory(network)
+#add_subdirectory(network)
 
 set(SCL_DIR scl/)
 

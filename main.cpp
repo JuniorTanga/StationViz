@@ -1,39 +1,35 @@
 #include <QGuiApplication>
 #include <QQmlApplicationEngine>
-#include <QQmlContext>
-#include <QFileInfo>
+#include <QtQml>
+#include <QSettings>
+#include <QResource>
+#include "AppContext.h"
+#include "Graph/SldView.h"
 
-#include "SldFacade.h"
-
-int main(int argc, char *argv[]) {
-#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
-    QGuiApplication::setHighDpiScaleFactorRoundingPolicy(Qt::HighDpiScaleFactorRoundingPolicy::PassThrough);
-#endif
+int main(int argc, char* argv[]) {
     QGuiApplication app(argc, argv);
+    QCoreApplication::setOrganizationName("StationViz");
+    QCoreApplication::setApplicationName("StationVizApp");
+
+    qmlRegisterType<SldView>("StationViz", 1, 0, "SldView");
+
+    static AppContext appContext;
+    qmlRegisterSingletonInstance("StationViz", 1, 0, "App", &appContext);
+
+
+
+    // Charger l'état UI sauvegardé
+    appContext.uiStore()->loadSettings();
 
     QQmlApplicationEngine engine;
+    Q_INIT_RESOURCE(qml);
+    engine.addImportPath("qrc:/");
+    engine.load(QUrl("qrc:/App.qml"));
+    if (engine.rootObjects().isEmpty()) return -1;
 
-    // Exposer SldFacade au QML
-    auto* facade = new SldFacade(&app);
-    engine.rootContext()->setContextProperty("sldFacade", facade);
-    facade->planJson();
-
-    // Passer un chemin initial (optionnel) depuis la ligne de commande
-    QString initialPath;
-    if (argc > 1) {
-        QFileInfo fi(QString::fromLocal8Bit(argv[1]));
-        if (fi.exists()) initialPath = fi.absoluteFilePath();
-    }
-    engine.rootContext()->setContextProperty("initialSclPath", initialPath);
-
-    // Charger Main.qml depuis le répertoire courant
-    const QUrl url = QUrl::fromLocalFile(QStringLiteral("ui/Main.qml"));
-    QObject::connect(&engine, &QQmlApplicationEngine::objectCreated, &app,
-                     [url](QObject *obj, const QUrl &objUrl) {
-                         if (!obj && url == objUrl) QCoreApplication::exit(-1);
-                     }, Qt::QueuedConnection);
-
-    engine.load(url);
+    QObject::connect(&app, &QCoreApplication::aboutToQuit, [&](){
+        appContext.uiStore()->saveSettings();
+    });
 
     return app.exec();
 }

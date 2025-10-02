@@ -81,3 +81,4 @@ CMakeLists.txt.user*
 .uic/
 /build*/
 /core/sld/boost*/
+/core/network/libiec61850*/

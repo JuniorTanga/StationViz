@@ -1,6 +1,7 @@
 #pragma once
 #include <string>
 #include <utility>
+#include <optional>
 
 namespace scl {
 
@@ -27,17 +28,17 @@ public:
     Result(Error e) : ok_(false), err_(std::move(e)) {}
 
     explicit operator bool() const { return ok_; }
-    const T& value() const { return value_; }
-    T& value() { return value_; }
-    const Error& error() const { return err_; }
+    const T& value() const { return *value_; }
+    T& value() { return *value_; }
+    const Error& error() const { return *err_; }
 
-    const T* operator->() const { return &value_; }
-    T* operator->() { return &value_; }
+    const T* operator->() const { return &(*value_); }
+    T* operator->() { return &(*value_); }
 
 private:
     bool ok_ = false;
-    T value_{};
-    Error err_{};
+    std::optional<T> value_{};
+    std::optional<Error> err_{};
 };
 
 class Status {

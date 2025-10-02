@@ -10,7 +10,7 @@ namespace scl {
 struct ScalarWithUnit {
     double value {0.0};
     std::string unit;        // ex: "V", "A", "Hz"
-    std::string multiplier;  // ex: "k", "m", "M" (IEC 61850 SI multiplier)
+    std::string multiplier;  // ex: "k", "m", "M"
 };
 
 struct TerminalRef {
@@ -102,12 +102,13 @@ struct LogicalNode {
     std::string prefix;  // @prefix
     std::string lnClass; // @lnClass
     std::string inst;    // @inst (LN0 a inst = "")
+    std::string desc; //optionelle
 };
 
 struct GseControlMeta {
     std::string name;    // @name
     std::string datSet;  // @datSet (nom du DataSet)
-    std::string appID;   // optionnel (certaines variantes)
+    std::string appID;   // optionnel
 };
 
 struct SmvControlMeta {
@@ -140,10 +141,10 @@ struct Ln0Info {
 
 struct LogicalDevice {
     std::string inst;
-    std::vector<LogicalNode> lns; // inchangé
-    Ln0Info ln0;                  // NEW: metas de LN0
+    std::vector<LogicalNode> lns; // LN0 + LN*
+    Ln0Info ln0;                  // metas de LN0
+    std::string desc;
 };
-
 
 // --- Endpoints (index réseau prêts pour network core)
 struct GseEndpoint {
@@ -163,10 +164,7 @@ struct MmsEndpoint {
     std::string iedName, apName;
     std::string ip;
     std::string port; // "102" par défaut si absent
-    // (ajoute d'autres P OSI si dispo)
 };
-
-
 
 struct AccessPoint {
     std::string name;       // @name
@@ -239,5 +237,24 @@ struct ResolvedLNode {
     const LogicalNode* ln {nullptr};
 };
 
+// --- Vue « équipements depuis IEDs » (pour cas sans <Substation>)
+struct EquipmentFromIED {
+    std::string iedName;
+    std::string ldInst;
+    std::string prefix;
+    std::string lnClass;
+    std::string lnInst;
+    std::vector<std::string> primaryAnchors; // ex: "SS:VL:BAY:CE:DISCONNECTOR_1"
+
+    // NEW: descriptions récupérées
+    std::string lnDesc;   // description du LN
+    std::string ldDesc;   // description du LD parent
+
+    // Helper: description combinée
+    std::string combinedDesc() const {
+        if (!lnDesc.empty() && !ldDesc.empty()) return lnDesc + " — " + ldDesc;
+        return !lnDesc.empty() ? lnDesc : ldDesc;
+    }
+};
 
 } // namespace scl

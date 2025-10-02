@@ -1,43 +1,49 @@
 #pragma once
 #include "SldTypes.h"
 #include "SldBuilder.h"
+#include <functional>
 
 namespace sld {
 
 class SldManager {
 public:
-    SldManager(const scl::SclModel* model, HeuristicsConfig cfg = {});
+    explicit SldManager(const scl::SclManager* sclMgr,
+                        HeuristicsConfig cfg = {});
 
-    // Constructions
-    scl::Status build(); // remplit raw_, clusters_, condensed_, plan_ (incl. feeders/couplers/transformers)
+    // construit tout: raw -> clusters/condensed -> plan
+    scl::Status build();
 
-    // Accès
-    const Graph& rawGraph() const { return raw_; }
-    const Graph& condensedGraph() const { return condensed_; }
+    // accès
+    const BoostGraph& raw() const { return raw_; }
+    const Index& rawIndex() const { return rawIdx_; }
+    const BoostGraph& condensed() const { return condensed_; }
+    const Index& condensedIndex() const { return condIdx_; }
     const SldPlan& plan() const { return plan_; }
 
-    // Debug helpers
-    scl::Status printRaw() const;         // CE -> CN
-    scl::Status printCondensed() const;   // Equip -> Bus
-    scl::Status printFeeders() const;
-    scl::Status printCouplers() const;
-    scl::Status printTransformers() const;
+    // JSON
+    std::string rawJson() const { return builder_.toJsonRaw(raw_).dump(); }
+    std::string condensedJson() const { return builder_.toJsonCondensed(condensed_).dump(); }
+    std::string planJson() const { return builder_.toJsonPlan(plan_).dump(); }
+
+    // Logging helpers
     scl::Status printStats() const;
 
-    // JSON
-    std::string rawJson() const { return builder_.toJson(raw_); }
-    std::string condensedJson() const { return builder_.toJson(condensed_); }
-    std::string planJson() const { return builder_.planToJson(plan_); }
+    // Observabilité (pour wrapper Qt → QML)
+    using Callback = std::function<void(const SldManager&)>;
+    void onUpdated(Callback cb){ callbacks_.push_back(std::move(cb)); }
 
 private:
-    const scl::SclModel* model_ {nullptr};
-    HeuristicsConfig cfg_{};
+    const scl::SclManager* sclMgr_{nullptr};
+    HeuristicsConfig cfg_;
     SldBuilder builder_;
 
-    Graph raw_;
+    BoostGraph raw_; Index rawIdx_;
     std::vector<BusCluster> clusters_;
-    Graph condensed_;
+    BoostGraph condensed_; Index condIdx_;
     SldPlan plan_;
+
+    std::vector<Callback> callbacks_;
+    void notify_() const { for (auto& cb : const_cast<SldManager*>(this)->callbacks_) cb(*this); }
 };
 
 } // namespace sld

@@ -1,278 +1,166 @@
 #include "SldBuilder.h"
-#include "JsonWriter.h"
-#include <cctype>
-#include <cerrno>
-#include <iostream> //pour le debuggage à enlever après
-#include <map>
-#include <queue>
-#include <sstream>
-
-#include "SldBuilder.h"
-#include <unordered_set>
 #include <algorithm>
+#include <queue>
+#include <set>
 
+using nlohmann::json;
 using namespace sld;
 
-namespace {
-
-// Renvoie le dernier segment après le dernier '/' (utile en fallback par cNodeName).
-static std::string lastSegment(const std::string& s) {
-    if (s.empty()) return s;
+static std::string lastSeg(const std::string& s){
     auto p = s.find_last_of('/');
-    return (p == std::string::npos) ? s : s.substr(p + 1);
+    return (p==std::string::npos)? s : s.substr(p+1);
+}
+static std::string keyAbs(const std::string& ss, const std::string& vl,
+                          const std::string& bay, const std::string& name){
+    return ss+"/"+vl+"/"+bay+"/"+name;
 }
 
-// Recherche si un cluster contient un CN donné (NodeId exact).
-static bool clusterHasCN_exact(const BusCluster& cl, const NodeId& cnId) {
-    // sldTypes.h: BusCluster::cnMembers est un std::vector<NodeId>
-    return std::find(cl.cnMembers.begin(), cl.cnMembers.end(), cnId) != cl.cnMembers.end();
-}
-
-// Fallback: recherche un CN par nom *suffixe* (match sur le dernier segment) et même Substation.
-static std::optional<const BusCluster*> findClusterByCnNameSuffix(
-    const std::vector<BusCluster>& clusters,
-    const std::string& ssName,
-    const std::string& cnNameSuffix)
-{
-    for (const auto& cl : clusters) {
-        if (cl.ssName != ssName) continue;
-        for (const auto& cnId : cl.cnMembers) {
-            if (lastSegment(cnId) == cnNameSuffix)
-                return &cl;
-        }
-    }
-    return std::nullopt;
-}
-
-// Index rapide: busId -> (ssName, vlName) (pratique pour remplir Feeder.vlName)
-struct BusIndex {
-    std::unordered_map<NodeId, std::pair<std::string,std::string>> byBusId;
-    explicit BusIndex(const std::vector<BusCluster>& clusters) {
-        for (const auto& cl : clusters) {
-            byBusId.emplace(cl.busNodeId, std::make_pair(cl.ssName, cl.vlName));
-        }
-    }
-};
-
-
-
-} // namespace
-
-static std::string makeTransformerNodeId(const std::string& ss, const std::string& trName) {
-    return "TR:" + ss + "/" + trName;
-}
-
-
-static std::string baseNameFromPath(const std::string& absPath) {
-    auto pos = absPath.find_last_of('/');
-    return pos == std::string::npos ? absPath : absPath.substr(pos+1);
-}
-static void splitAbsCNPath(const std::string& p, std::string& ss, std::string& vl, std::string& bay, std::string& name) {
-    // attendu: "SS/VL/BAY/CNNAME" (min 4 segments)
-    size_t a=0, b=p.find('/');
-    std::string segs[4]; int i=0;
-    while (b!=std::string::npos && i<3) { segs[i++] = p.substr(a, b-a); a=b+1; b=p.find('/', a); }
-    segs[i++] = p.substr(a);
-    ss = (i>0?segs[0]:""); vl=(i>1?segs[1]:""); bay=(i>2?segs[2]:""); name=(i>3?segs[3]:"");
-}
-static inline std::string keyNameVL(const std::string& ss, const std::string& vl, const std::string& name) {
-    return ss + "|" + vl + "|" + name;
-}
-static inline std::string keyAbs(const std::string& absPath) { return absPath; }
-
-// ID canonique d’un CN quand on connaît le chemin absolu SCL
-static inline NodeId makeCNIdFromAbs(const std::string& absPath) {
-    return std::string("CN:") + absPath;
-}
-
-SldBuilder::SldBuilder(const scl::SclModel *model, const HeuristicsConfig &cfg)
+SldBuilder::SldBuilder(const scl::SclModel* model, const HeuristicsConfig& cfg)
     : model_(model), cfg_(cfg) {}
 
-static std::string joinPath4(const std::string &a, const std::string &b,
-                             const std::string &c, const std::string &d) {
-    std::string s;
-    s.reserve(a.size() + b.size() + c.size() + d.size() + 3);
-    s += a;
-    s.push_back('/');
-    s += b;
-    s.push_back('/');
-    s += c;
-    s.push_back('/');
-    s += d;
+// ---- utils
+std::string SldBuilder::keyVL(const std::string& ss, const std::string& vl){
+    return ss+":"+vl;
+}
+std::string SldBuilder::makeCNIdAbs(const std::string& ss, const std::string& vl,
+                                    const std::string& bay, const std::string& name){
+    return "CN:"+ss+"/"+vl+"/"+bay+"/"+name;
+}
+std::string SldBuilder::makeCEId(const std::string& ss, const std::string& vl,
+                                 const std::string& bay, const std::string& ce){
+    return "CE:"+ss+"/"+vl+"/"+bay+"/"+ce;
+}
+std::string SldBuilder::makeBusId(const std::string& ss, const std::string& vl, int n){
+    return "BUS:"+ss+"/"+vl+"/cluster#"+std::to_string(n);
+}
+std::string SldBuilder::upper(std::string s){
+    for(char& c:s) c = (char)std::toupper((unsigned char)c);
     return s;
 }
-
-NodeId SldBuilder::makeCNId(const std::string &ss, const std::string &vl,
-                            const std::string &bay, const std::string &cnPath) {
-    return std::string("CN:") + ss + "/" + vl + "/" + bay + "/" + cnPath;
-}
-NodeId SldBuilder::makeCEId(const std::string &ss, const std::string &vl,
-                            const std::string &bay, const std::string &ce) {
-    return std::string("CE:") + ss + "/" + vl + "/" + bay + "/" + ce;
-}
-
-std::string SldBuilder::upper(std::string s) {
-    for (char &c : s)
-        c = (char)std::toupper((unsigned char)c);
-    return s;
-}
-std::string SldBuilder::keyVL(const std::string &ss, const std::string &vl) {
-    return ss + ":" + vl;
-}
-
-static std::string trimU(std::string s) {
-    auto issp = [](unsigned char c){ return c==' '||c=='\t'||c=='\n'||c=='\r'; };
-    size_t a=0,b=s.size();
-    while (a<b && issp((unsigned char)s[a])) ++a;
-    while (b>a && issp((unsigned char)s[b-1])) --b;
-    s = s.substr(a,b-a);
-    for (char& c : s) c = (char)std::toupper((unsigned char)c);
-    return s;
-}
-
-EquipmentKind SldBuilder::mapEquipmentKind(const std::string &ceType) {
-    auto t = trimU(ceType);
-
-    // synonymes / LN hints fréquents
-    if (t == "CBR" || t == "CB" || t == "BREAKER" || t == "XCBR")
-        return EquipmentKind::CB;
-    if (t == "DIS" || t == "DS" || t == "DISCONNECTOR" || t == "XSWI" ||
-        t == "SWITCH")
-        return EquipmentKind::DS;
-    if (t == "ES" || t == "EARTHSWITCH" || t == "EGND")
-        return EquipmentKind::ES;
-
-    if (t == "CTR" || t == "CT" || t == "TCTR" || t == "CURRENTTRANSFORMER")
-        return EquipmentKind::CT;
-    if (t == "VTR" || t == "VT" || t == "PT" || t == "TVTR" ||
-        t == "VOLTAGETRANSFORMER")
-        return EquipmentKind::VT;
-
-    if (t == "PTR" || t == "POWERTRANSFORMER" || t == "TRF" || t == "TRANSFORMER")
-        return EquipmentKind::Transformer;
-
-    if (t == "LINE" || t == "FEEDER")
-        return EquipmentKind::Line;
-    if (t == "CABLE")
-        return EquipmentKind::Cable;
-    if (t == "BUSBAR" || t == "BUSBARSECTION" || t == "BBS")
-        return EquipmentKind::BusbarSection;
-
-    return EquipmentKind::Unknown;
-}
-
-bool SldBuilder::isLikelyBusCN(const std::string &nameOrPath,
-                               int degree) const {
+bool SldBuilder::isLikelyBusCN(const std::string& nameOrPath, int degree) const{
+    if (degree >= cfg_.busDegreeThreshold) return true;
     auto u = upper(nameOrPath);
-    if (degree >= cfg_.busDegreeThreshold)
-        return true;
-    for (const auto &hint : cfg_.busNameHints) {
-        if (u.find(hint) != std::string::npos)
-            return true;
-    }
+    for (const auto& h : cfg_.busNameHints)
+        if (u.find(h) != std::string::npos) return true;
     return false;
 }
 
-scl::Status SldBuilder::buildRaw(Graph& out) const {
-    if (!model_) return scl::Status(scl::Error{scl::ErrorCode::LogicError, "SclModel is null"});
-    out.nodes.clear(); out.edges.clear();
+V SldBuilder::ensureVertex(BoostGraph& g, Index& idx, const VertexProp& vp){
+    auto it = idx.nodeById.find(vp.id);
+    if (it != idx.nodeById.end()) return it->second;
+    V v = boost::add_vertex(g);
+    g[v] = vp;
+    idx.nodeById.emplace(vp.id, v);
+    return v;
+}
+std::optional<V> SldBuilder::findVertex(const Index& idx, const NodeId& id){
+    auto it = idx.nodeById.find(id);
+    if (it==idx.nodeById.end()) return std::nullopt;
+    return it->second;
+}
 
-    // Index CN existants par (abs path) et par (SS,VL,NAME) pour canoniser
-    struct CNIdx { NodeId id; const scl::ConnectivityNode* cn; std::string absPath; };
-    std::unordered_map<std::string, CNIdx> byAbs;     // key = "SS/VL/BAY/NAME"
-    std::unordered_map<std::string, CNIdx> byNameVL;  // key = "SS|VL|NAME" (première occurrence)
+EquipmentKind SldBuilder::mapEquipmentKind(const std::string& ceType){
+    auto up = upper(ceType);
+    if (up=="CBR" || up=="CB" || up=="BREAKER" || up=="XCBR") return EquipmentKind::CB;
+    if (up=="DIS" || up=="DS" || up=="DISCONNECTOR" || up=="XSWI" || up=="SWITCH") return EquipmentKind::DS;
+    if (up=="ES" || up=="EARTHSWITCH" || up=="EGND") return EquipmentKind::ES;
+    if (up=="CTR" || up=="CT" || up=="TCTR" || up=="CURRENTTRANSFORMER") return EquipmentKind::CT;
+    if (up=="VTR" || up=="VT" || up=="PT" || up=="TVTR" || up=="VOLTAGETRANSFORMER") return EquipmentKind::VT;
+    if (up=="PTR" || up=="POWERTRANSFORMER" || up=="TRANSFORMER") return EquipmentKind::Transformer;
+    if (up=="LINE" || up=="FEEDER") return EquipmentKind::Line;
+    if (up=="CABLE") return EquipmentKind::Cable;
+    if (up=="BUSBAR" || up=="BUSBARSECTION" || up=="BBS") return EquipmentKind::BusbarSection;
+    return EquipmentKind::Unknown;
+}
 
-    // 1) Pass: créer tous les CN déclarés dans les Bays + index
-    for (const auto& ss : model_->substations) {
-        for (const auto& vl : ss.vlevels) {
-            for (const auto& bay : vl.bays) {
-                for (const auto& cn : bay.connectivityNodes) {
-                    // chemin absolu officiel si présent, sinon fabriqué
-                    const std::string abs = !cn.pathName.empty()
-                                                ? cn.pathName
-                                                : (ss.name + "/" + vl.name + "/" + bay.name + "/" + cn.name);
-                    NodeId id = makeCNIdFromAbs(abs);
-                    Node n;
-                    n.id = id; n.kind = NodeKind::ConnectivityNode;
-                    n.label = cn.name.empty() ? baseNameFromPath(abs) : cn.name;
-                    n.ssName = ss.name; n.vlName = vl.name; n.bayName = bay.name; n.cn = &cn;
-                    out.nodes.emplace(id, n);
+// -------- 1) buildRaw --------
+scl::Status SldBuilder::buildRaw(BoostGraph& g, Index& idx) const {
+    g.clear(); idx.nodeById.clear();
+    if (!model_) return scl::Status(scl::Error{scl::ErrorCode::LogicError,"SclModel is null"});
 
-                    CNIdx idx{ id, &cn, abs };
-                    byAbs.emplace(keyAbs(abs), idx);
-                    // enregistre le premier (SS,VL,NAME)
-                    const std::string kNVL = keyNameVL(ss.name, vl.name, n.label);
-                    if (!byNameVL.count(kNVL)) byNameVL.emplace(kNVL, idx);
+    // 1. Créer CN nodes connus
+    std::unordered_map<std::string, NodeId> absToId;
+    for (const auto& ss : model_->substations){
+        for (const auto& vl : ss.vlevels){
+            for (const auto& bay : vl.bays){
+                for (const auto& cn : bay.connectivityNodes){
+                    const std::string abs = !cn.pathName.empty() ?
+                        cn.pathName : keyAbs(ss.name, vl.name, bay.name, cn.name);
+                    VertexProp vp;
+                    vp.id   = "CN:"+abs;
+                    vp.kind = NodeKind::ConnectivityNode;
+                    vp.label= cn.name.empty()? lastSeg(abs):cn.name;
+                    vp.ss=ss.name; vp.vl=vl.name; vp.bay=bay.name; vp.cn=&cn;
+                    ensureVertex(g, idx, vp);
+                    absToId.emplace(abs, vp.id);
                 }
             }
         }
     }
 
-    // helper: obtenir (et au besoin créer) un CN par nom dans (SS,VL)
-    auto ensureCNByNameVL = [&](const std::string& ss, const std::string& vl,
-                                const std::string& bay, const std::string& name)->NodeId {
-        const std::string kNVL = keyNameVL(ss, vl, name);
-        auto it = byNameVL.find(kNVL);
-        if (it != byNameVL.end()) return it->second.id;
-        // créer un CN « local » dans ce bay (fallback)
-        const std::string abs = ss + "/" + vl + "/" + bay + "/" + name;
-        NodeId id = makeCNIdFromAbs(abs);
-        Node n;
-        n.id = id; n.kind = NodeKind::ConnectivityNode; n.label = name;
-        n.ssName = ss; n.vlName = vl; n.bayName = bay; n.cn = nullptr; // synthétique
-        out.nodes.emplace(id, n);
-        CNIdx idx{ id, nullptr, abs };
-        byAbs.emplace(keyAbs(abs), idx);
-        byNameVL.emplace(kNVL, idx);
-        return id;
+    auto ensureCN = [&](const std::string& ss, const std::string& vl,
+                        const std::string& bay, const std::string& name)->NodeId{
+        auto abs = keyAbs(ss,vl,bay,name);
+        auto it = absToId.find(abs);
+        if (it!=absToId.end()) return it->second;
+        VertexProp vp;
+        vp.id = makeCNIdAbs(ss,vl,bay,name);
+        vp.kind = NodeKind::ConnectivityNode;
+        vp.label = name;
+        vp.ss=ss; vp.vl=vl; vp.bay=bay; vp.cn=nullptr; // synthétique
+        ensureVertex(g, idx, vp);
+        absToId.emplace(abs, vp.id);
+        return vp.id;
     };
 
-    // 2) Pass: créer CE et arêtes CE->CN en résolvant les CN de façon canonique
-    for (const auto& ss : model_->substations) {
-        for (const auto& vl : ss.vlevels) {
-            for (const auto& bay : vl.bays) {
-                // CE node
-                for (const auto& ce : bay.equipments) {
-                    NodeId ceId = makeCEId(ss.name, vl.name, bay.name, ce.name);
-                    Node n; n.id = ceId; n.kind = NodeKind::Equipment; n.label = ce.name;
-                    n.ssName = ss.name; n.vlName = vl.name; n.bayName = bay.name; n.ce = &ce;
-                    n.eKind = mapEquipmentKind(ce.type);
-                    n.lnodes = ce.lnodes; // copie
-                    out.nodes.emplace(ceId, n);
+    // 2. Créer CE + arêtes CE->CN
+    for (const auto& ss : model_->substations){
+        for (const auto& vl : ss.vlevels){
+            for (const auto& bay : vl.bays){
+                for (const auto& ce : bay.equipments){
+                    VertexProp ev;
+                    ev.id = makeCEId(ss.name,vl.name,bay.name,ce.name);
+                    ev.kind = NodeKind::Equipment;
+                    ev.eKind = mapEquipmentKind(ce.type);
+                    ev.label = ce.name; ev.ss=ss.name; ev.vl=vl.name; ev.bay=bay.name; ev.ce=&ce;
+                    ev.lnodes = ce.lnodes; // pont Network
+                    V vCE = ensureVertex(g, idx, ev);
 
-                    for (const auto& t : ce.terminals) {
-                        NodeId cnId;
-                        // 1) priorité au connectivityNodeRef (chemin absolu)
-                        if (!t.connectivityNodeRef.empty()) {
-                            auto it = byAbs.find(keyAbs(t.connectivityNodeRef));
-                            if (it != byAbs.end()) {
-                                cnId = it->second.id;
-                            } else {
-                                // CN non déclaré dans <ConnectivityNode> — on le crée synthétiquement à partir du chemin
-                                std::string ss2, vl2, bay2, name2;
-                                splitAbsCNPath(t.connectivityNodeRef, ss2, vl2, bay2, name2);
-                                NodeId nid = makeCNIdFromAbs(t.connectivityNodeRef);
-                                Node cnN; cnN.id = nid; cnN.kind = NodeKind::ConnectivityNode;
-                                cnN.label = !name2.empty() ? name2 : baseNameFromPath(t.connectivityNodeRef);
-                                cnN.ssName = ss2; cnN.vlName = vl2; cnN.bayName = bay2;
-                                out.nodes.emplace(nid, cnN);
-                                CNIdx idx{ nid, nullptr, t.connectivityNodeRef };
-                                byAbs.emplace(keyAbs(t.connectivityNodeRef), idx);
-                                byNameVL.emplace(keyNameVL(ss2, vl2, cnN.label), idx);
-                                cnId = nid;
+                    for (const auto& t : ce.terminals){
+                        std::string cnId;
+                        if (!t.connectivityNodeRef.empty()){
+                            // t.connectivityNodeRef = "SS/VL/BAY/CN"
+                            cnId = "CN:"+t.connectivityNodeRef;
+                            // créer si inconnu
+                            if (!findVertex(idx, cnId)){
+                                std::string ss2,vl2,bay2,name2;
+                                // split
+                                auto s = t.connectivityNodeRef;
+                                size_t a=0; size_t b=s.find('/');
+                                std::vector<std::string> segs;
+                                while (b!=std::string::npos){ segs.push_back(s.substr(a,b-a)); a=b+1; b=s.find('/',a); }
+                                segs.push_back(s.substr(a));
+                                if (segs.size()>=4){
+                                    VertexProp vp;
+                                    vp.id=cnId; vp.kind=NodeKind::ConnectivityNode;
+                                    vp.ss=segs[0]; vp.vl=segs[1]; vp.bay=segs[2];
+                                    vp.label=segs[3]; vp.cn=nullptr;
+                                    ensureVertex(g, idx, vp);
+                                }
                             }
-                        }
-                        // 2) sinon, cNodeName → on tente de résoudre dans (SS,VL)
-                        else if (!t.cNodeName.empty()) {
-                            cnId = ensureCNByNameVL(ss.name, vl.name, bay.name, t.cNodeName);
-                        } else {
-                            continue; // terminal non câblé
-                        }
+                        } else if (!t.cNodeName.empty()){
+                            cnId = ensureCN(ss.name, vl.name, bay.name, t.cNodeName);
+                        } else { continue; }
 
-                        Edge e; e.from = ceId; e.to = cnId; e.kind = EdgeKind::CE_to_CN;
-                        e.id = std::string("E:") + ceId + "->" + cnId; e.terminalName = t.name;
-                        e.cnPath = !t.connectivityNodeRef.empty() ? t.connectivityNodeRef : t.cNodeName;
-                        out.edges.push_back(std::move(e));
+                        auto vCNopt = findVertex(idx, cnId);
+                        if (!vCNopt) continue;
+                        V vCN = *vCNopt;
+
+                        auto [e,ok] = boost::add_edge(vCE, vCN, g);
+                        g[e].kind = EdgeKind::CE_to_CN;
+                        g[e].id = "E:"+ev.id+"->"+cnId;
+                        g[e].terminalName = t.name;
+                        g[e].cnPath = !t.connectivityNodeRef.empty() ? t.connectivityNodeRef : t.cNodeName;
                     }
                 }
             }
@@ -282,744 +170,512 @@ scl::Status SldBuilder::buildRaw(Graph& out) const {
     return scl::Status::Ok();
 }
 
-SldBuilder::RawView SldBuilder::buildRawView_(const Graph &raw) const {
-    RawView v;
-    for (const auto &e : raw.edges)
-        if (e.kind == EdgeKind::CE_to_CN) {
-            v.ceToCN[e.from].push_back(e.to);
-            v.cnToCE[e.to].push_back(e.from);
+SldBuilder::RawAdj SldBuilder::buildAdj(const BoostGraph& raw, const Index& idx) const{
+    RawAdj r;
+    for (auto eIt = edges(raw); eIt.first != eIt.second; ++eIt.first){
+        E e = *eIt.first;
+        V a = source(e, raw);
+        V b = target(e, raw);
+        const auto& va = raw[a];
+        const auto& vb = raw[b];
+        if (raw[e].kind != EdgeKind::CE_to_CN) continue;
+        if (va.kind==NodeKind::Equipment && vb.kind==NodeKind::ConnectivityNode){
+            r.ceToCN[va.id].push_back(vb.id);
+            r.cnToCE[vb.id].push_back(va.id);
+        } else if (vb.kind==NodeKind::Equipment && va.kind==NodeKind::ConnectivityNode){
+            r.ceToCN[vb.id].push_back(va.id);
+            r.cnToCE[va.id].push_back(vb.id);
         }
-    return v;
+    }
+    return r;
 }
 
-scl::Status
-SldBuilder::clusterAndCondense(const Graph &raw, Graph &out,
-                               std::vector<BusCluster> &clusters) const {
-    out.nodes.clear();
-    out.edges.clear();
-    clusters.clear();
-    // copier équipements tels quels
-    for (const auto &kv : raw.nodes) {
-        const Node &n = kv.second;
-        if (n.kind == NodeKind::Equipment)
-            out.nodes.emplace(n.id, n);
+// -------- 2) cluster + condense --------
+scl::Status SldBuilder::clusterAndCondense(const BoostGraph& raw, const Index& rawIdx,
+                                           BoostGraph& out, Index& idxOut,
+                                           std::vector<BusCluster>& clusters) const {
+    out.clear(); idxOut.nodeById.clear(); clusters.clear();
+
+    // copier equipments
+    for (auto vIt = vertices(raw); vIt.first != vIt.second; ++vIt.first){
+        V v = *vIt.first;
+        const auto& pv = raw[v];
+        if (pv.kind == NodeKind::Equipment){
+            ensureVertex(out, idxOut, pv);
+        }
     }
 
-    // Degré CN et bus-likeness
-    RawView v = buildRawView_(raw);
-    std::unordered_map<NodeId, int> degree;
-    for (const auto &kv : v.cnToCE)
-        degree[kv.first] = (int)kv.second.size();
+    // degree CN + bus-likeness
+    RawAdj adj = buildAdj(raw, rawIdx);
+    std::unordered_map<NodeId,int> degree;
+    for (const auto& kv : adj.cnToCE) degree[kv.first] = (int)kv.second.size();
 
-    // Heuristique bus: degree/nom + présence d’un BusbarSection adjacente
-    std::unordered_set<NodeId> cnIsBus;
-    for (const auto &kv : raw.nodes) {
-        const Node &n = kv.second;
-        if (n.kind != NodeKind::ConnectivityNode)
-            continue;
-        std::string nameOrPath =
-            (n.cn && !n.cn->pathName.empty()) ? n.cn->pathName : n.label;
-        int deg = degree[n.id];
-        bool busy = isLikelyBusCN(nameOrPath, deg);
-        if (!busy) {
-            // si un CE de type BusbarSection touche ce CN, le marquer bus
-            auto it = v.cnToCE.find(n.id);
-            if (it != v.cnToCE.end()) {
-                for (const auto &ceId : it->second) {
-                    auto ne = raw.nodes.find(ceId);
-                    if (ne != raw.nodes.end() &&
-                        ne->second.eKind == EquipmentKind::BusbarSection) {
-                        busy = true;
-                        break;
+    std::unordered_set<NodeId> isBusCN;
+    for (auto vIt = vertices(raw); vIt.first != vIt.second; ++vIt.first){
+        V v = *vIt.first;
+        const auto& pv = raw[v];
+        if (pv.kind != NodeKind::ConnectivityNode) continue;
+        std::string name = pv.cn && !pv.cn->pathName.empty() ? pv.cn->pathName : pv.label;
+        if (isLikelyBusCN(name, degree[pv.id])){
+            isBusCN.insert(pv.id);
+        }else{
+            // heuristique: CN adjacent à BusbarSection -> bus
+            auto itC = adj.cnToCE.find(pv.id);
+            if (itC != adj.cnToCE.end()){
+                for (const auto& ceId : itC->second){
+                    auto vCE = findVertex(rawIdx, ceId);
+                    if (vCE && raw[*vCE].eKind == EquipmentKind::BusbarSection){
+                        isBusCN.insert(pv.id); break;
                     }
                 }
             }
         }
-        if (busy)
-            cnIsBus.insert(n.id);
     }
 
-    // Union-Find des CN bus connectés par BusbarSection ou par DS intra-VL
-    DSU dsu;
-    auto ensure = [&](const NodeId &x) {
-        if (!dsu.p.count(x))
-            dsu.p[x] = x;
-    };
+    // DSU par (SS:VL) — ne clusterise pas à travers les VL
+    // On regroupe d’abord par SS:VL
+    std::unordered_map<std::string, std::vector<NodeId>> busCNByVL;
+    for (const auto& cnId : isBusCN){
+        auto vCN = *findVertex(rawIdx, cnId);
+        const auto& pv = raw[vCN];
+        busCNByVL[keyVL(pv.ss, pv.vl)].push_back(cnId);
+    }
 
-    // init
-    for (const auto &id : cnIsBus)
-        ensure(id);
+    int clusterIndex = 1;
+    for (auto& [kvl, cnList] : busCNByVL){
+        // DSU indexation 0..n-1
+        std::unordered_map<NodeId,int> idx;
+        std::vector<int> parent(cnList.size());
+        for (size_t i=0;i<cnList.size();++i){ idx[cnList[i]] = (int)i; parent[i]=(int)i; }
+        auto findp = [&](int x){ while(parent[x]!=x) x=parent[x]=parent[parent[x]]; return x; };
+        auto uni = [&](int a,int b){ a=findp(a); b=findp(b); if(a!=b) parent[a]=b; };
 
-    // lier via CE de type BusbarSection
-    for (const auto &kv : raw.nodes) {
-        const Node &n = kv.second;
-        if (n.kind != NodeKind::Equipment)
-            continue;
-        if (n.eKind == EquipmentKind::BusbarSection ||
-            n.eKind == EquipmentKind::DS) {
-            // prendre les CN voisins marqués bus
-            std::vector<NodeId> cnList;
-            auto it = v.ceToCN.find(n.id);
-            if (it != v.ceToCN.end()) {
-                for (const auto &cnId : it->second)
-                    if (cnIsBus.count(cnId))
-                        cnList.push_back(cnId);
+        // Unions : CN bus reliés via BBS ou DS
+        for (const auto& cePair : adj.ceToCN){
+            auto vCEopt = findVertex(rawIdx, cePair.first);
+            if (!vCEopt) continue;
+            const auto& ceV = raw[*vCEopt];
+            if (ceV.kind!=NodeKind::Equipment) continue;
+            if (ceV.eKind!=EquipmentKind::BusbarSection && ceV.eKind!=EquipmentKind::DS) continue;
+            // collect CN bus voisins
+            std::vector<int> local;
+            for (const auto& cnId : cePair.second){
+                if (!isBusCN.count(cnId)) continue;
+                auto itx = idx.find(cnId);
+                if (itx!=idx.end()) local.push_back(itx->second);
             }
-            // union entre tous les CN bus connectés par ce CE
-            for (size_t i = 1; i < cnList.size(); ++i)
-                dsu.u(cnList[0], cnList[i]);
+            for (size_t i=1;i<local.size();++i) uni(local[0], local[i]);
         }
-    }
 
-    // Former les clusters (par SS/VL)
-    std::unordered_map<std::string, BusCluster> acc; // key = rootId
-    for (const auto &id : cnIsBus) {
-        NodeId r = dsu.f(id);
-        const Node &cnNode = raw.nodes.at(id);
-        std::string key = r; // cluster key
-        auto &cl = acc[key];
-        if (cl.cnMembers.empty()) {
-            cl.ssName = cnNode.ssName;
-            cl.vlName = cnNode.vlName;
+        // regroupe par racine
+        std::unordered_map<int, std::vector<NodeId>> groups;
+        for (size_t i=0;i<cnList.size();++i) groups[findp((int)i)].push_back(cnList[i]);
 
-            if (cl.label.empty()) {
-                std::string base = "BUS";
-                if (!cl.cnMembers.empty()) {
-                    const auto& firstCnId = cl.cnMembers.front(); // "CN:SS/VL/BAY/NAME"
-                    auto pos = firstCnId.find_last_of('/');
-                    base = (pos==std::string::npos) ? firstCnId : firstCnId.substr(pos+1);
+        // crée les Bus + edges Equip->Bus
+        for (auto& [root,list] : groups){
+            if (list.empty()) continue;
+            const auto& vCN = raw[*findVertex(rawIdx, list.front())];
+            BusCluster bc;
+            bc.ss = vCN.ss; bc.vl = vCN.vl;
+            bc.cnMembers = list;
+            bc.label = vCN.vl + "-" + lastSeg(list.front());
+            bc.busNodeId = makeBusId(bc.ss, bc.vl, clusterIndex++);
+
+            VertexProp bv; bv.id=bc.busNodeId; bv.kind=NodeKind::Bus;
+            bv.ss=bc.ss; bv.vl=bc.vl; bv.label=bc.label;
+            V vBus = ensureVertex(out, idxOut, bv);
+
+            clusters.push_back(bc);
+
+            // rediriger CE voisins -> Bus
+            for (const auto& cnId : list){
+                auto itCEs = adj.cnToCE.find(cnId);
+                if (itCEs==adj.cnToCE.end()) continue;
+                for (const auto& ceId : itCEs->second){
+                    auto vCE = findVertex(idxOut, ceId); // CE déjà copié
+                    if (!vCE) continue;
+                    auto [e,ok] = boost::add_edge(*vCE, vBus, out);
+                    out[e].kind = EdgeKind::Equip_to_Bus;
+                    out[e].id   = "E:"+out[*vCE].id+"->"+out[vBus].id;
                 }
-                cl.label = cl.vlName + "-" + base; // ex : "E1-BB1", "E1-BB2", "M1-BB1"
             }
-
         }
-        cl.cnMembers.push_back(id);
     }
 
+    return scl::Status::Ok();
+}
 
-    // Créer les nodes Bus et mapping CN->Bus
-    std::unordered_map<NodeId, NodeId> cnToBus;
-    int clusterIdx = 1;
-    for (auto& kv : acc) {
-        auto& cl = kv.second;
+// -------- 3a) Couplers --------
+scl::Status SldBuilder::detectCouplers(const BoostGraph& condensed, const Index&,
+                                       const std::vector<BusCluster>& clusters,
+                                       std::vector<BusCoupler>& out) const {
+    // index bus par (SS:VL)
+    std::unordered_map<std::string, std::unordered_set<NodeId>> busByVL;
+    for (const auto& cl : clusters)
+        busByVL[keyVL(cl.ss, cl.vl)].insert(cl.busNodeId);
 
-        // Calcule un label parlant à partir du 1er CN membre (toujours)
-        std::string base = "BUS";
-        if (!cl.cnMembers.empty()) {
-            const auto& firstCnId = cl.cnMembers.front(); // "CN:SS/VL/BAY/NAME"
-            auto pos = firstCnId.find_last_of('/');
-            base = (pos == std::string::npos) ? firstCnId : firstCnId.substr(pos + 1);
+    // CE touchant 2 bus distincts dans le même VL => coupler
+    for (auto vIt=vertices(condensed); vIt.first!=vIt.second; ++vIt.first){
+        V v = *vIt.first;
+        const auto& pv = condensed[v];
+        if (pv.kind != NodeKind::Equipment) continue;
+        if (pv.eKind != EquipmentKind::CB && pv.eKind != EquipmentKind::DS) continue;
+
+        std::unordered_set<NodeId> buses;
+        for (auto aeIt = adjacent_vertices(v, condensed); aeIt.first!=aeIt.second; ++aeIt.first){
+            V w = *aeIt.first;
+            if (condensed[w].kind == NodeKind::Bus) buses.insert(condensed[w].id);
         }
-        cl.label = cl.vlName + "-" + base;  // ex: "E1-BB1", "E1-BB2", "M1-BB1"
+        if (buses.size() >= 2){
+            auto it = buses.begin();
+            BusCoupler c;
+            c.couplerEquipId = pv.id;
+            c.busA = *it++; c.busB = *it;
+            c.isBreaker = (pv.eKind == EquipmentKind::CB);
+            c.ss = pv.ss; c.vl = pv.vl;
 
-        cl.busNodeId = std::string("BUS:") + cl.ssName + "/" + cl.vlName + "/cluster#" + std::to_string(clusterIdx++);
+            // même VL ?
+            if (busByVL[keyVL(pv.ss,pv.vl)].count(c.busA) &&
+                busByVL[keyVL(pv.ss,pv.vl)].count(c.busB))
+                out.push_back(std::move(c));
+        }
+    }
+    return scl::Status::Ok();
+}
 
-        Node b;
-        b.id = cl.busNodeId;
-        b.kind = NodeKind::Bus;
-        b.label = cl.label;                 // <--- label final ici
-        b.ssName = cl.ssName;
-        b.vlName = cl.vlName;
-        out.nodes.emplace(b.id, std::move(b));
-
+// -------- 3b) Feeders --------
+scl::Status SldBuilder::detectFeeders(const BoostGraph& raw, const Index& rawIdx,
+                                      const BoostGraph& condensed, const Index&,
+                                      const std::vector<BusCluster>& clusters,
+                                      std::vector<Feeder>& out) const {
+    // CN->Bus map
+    std::unordered_map<NodeId, NodeId> cnToBus;
+    for (const auto& cl : clusters)
         for (const auto& cnId : cl.cnMembers)
             cnToBus[cnId] = cl.busNodeId;
 
-        clusters.push_back(cl);
+    // CE->Bus map (condensed)
+    std::unordered_map<NodeId, std::vector<NodeId>> ceToBus;
+    for (auto vIt=vertices(condensed); vIt.first!=vIt.second; ++vIt.first){
+        V v = *vIt.first;
+        const auto& pv = condensed[v];
+        if (pv.kind != NodeKind::Equipment) continue;
+        for (auto aIt = adjacent_vertices(v, condensed); aIt.first!=aIt.second; ++aIt.first){
+            if (condensed[*aIt.first].kind == NodeKind::Bus)
+                ceToBus[pv.id].push_back(condensed[*aIt.first].id);
+        }
     }
 
-    // Reconnecter CE -> Bus quand CN côté CE est dans un cluster bus
-    for (const auto &e : raw.edges)
-        if (e.kind == EdgeKind::CE_to_CN) {
-            auto it = cnToBus.find(e.to);
-            if (it != cnToBus.end()) {
-                Edge ne;
-                ne.kind = EdgeKind::Equip_to_Bus;
-                ne.from = e.from;
-                ne.to = it->second;
-                ne.id = std::string("E:") + ne.from + "->" + ne.to;
-                ne.terminalName = e.terminalName;
-                ne.cnPath = e.cnPath;
-                out.edges.push_back(std::move(ne));
+    // Raw adjacency for walks
+    RawAdj adj = buildAdj(raw, rawIdx);
+
+    auto isPass = [&](EquipmentKind k){
+        for (int x : cfg_.seriesPassKinds) if ((int)k==x) return true;
+        return false;
+    };
+    auto isEnd = [&](EquipmentKind k){
+        for (int x : cfg_.endpointKinds) if ((int)k==x) return true;
+        return false;
+    };
+
+    int counter=1;
+    for (auto vIt=vertices(condensed); vIt.first!=vIt.second; ++vIt.first){
+        const auto& ce = condensed[*vIt.first];
+        if (ce.kind!=NodeKind::Equipment) continue;
+        auto itB = ceToBus.find(ce.id);
+        if (itB==ceToBus.end()) continue;
+
+        // éviter les couplers (touchent 2+ bus)
+        if ((ce.eKind==EquipmentKind::CB || ce.eKind==EquipmentKind::DS) &&
+            itB->second.size()>=2)
+            continue;
+
+        // depuis le CE de départ, trouver dans raw un CN « non bus » pour partir
+        auto itCNs = adj.ceToCN.find(ce.id);
+        if (itCNs==adj.ceToCN.end()) continue;
+        NodeId startCN;
+        for (const auto& cnId : itCNs->second){
+            if (!cnToBus.count(cnId)){ startCN = cnId; break; }
+        }
+        if (startCN.empty()) continue;
+
+        // marche linéaire simple CE↔CN en s’éloignant du bus
+        std::unordered_set<NodeId> visCE, visCN;
+        visCE.insert(ce.id); visCN.insert(startCN);
+        std::vector<NodeId> chain; chain.push_back(ce.id);
+        NodeId currCN = startCN;
+        EquipmentKind endK = EquipmentKind::Unknown;
+        int depth=0;
+        while (depth++ < cfg_.feederMaxDepth){
+            // CN -> CE (non visité, pas un retour au bus)
+            auto itCEs = adj.cnToCE.find(currCN);
+            if (itCEs==adj.cnToCE.end()) break;
+            NodeId nextCE;
+            for (const auto& cand : itCEs->second){
+                if (visCE.count(cand)) continue;
+                if (ceToBus.count(cand) && cand!=chain.front()) continue;
+                nextCE = cand; break;
+            }
+            if (nextCE.empty()) break;
+            visCE.insert(nextCE);
+            chain.push_back(nextCE);
+            const auto& pvNext = raw[*findVertex(rawIdx, nextCE)];
+            if (isEnd(pvNext.eKind)){ endK = pvNext.eKind; break; }
+
+            // CE -> CN suivant (non-bus, non visité)
+            auto itCN2 = adj.ceToCN.find(nextCE);
+            if (itCN2==adj.ceToCN.end()) break;
+            NodeId nextCN;
+            for (const auto& cn2 : itCN2->second){
+                if (visCN.count(cn2)) continue;
+                if (cnToBus.count(cn2)) continue;
+                nextCN = cn2; break;
+            }
+            if (nextCN.empty()) break;
+            visCN.insert(nextCN);
+            currCN = nextCN;
+            if (!isPass(pvNext.eKind)){
+                // on pourrait s’arrêter ici si besoin; on continue prudemment
             }
         }
+
+        Feeder f;
+        f.busId = itB->second.front();
+        f.ss = ce.ss; f.vl = ce.vl;
+        f.chain = std::move(chain);
+        f.endpointType = toString(endK);
+        f.id = "FEED:"+f.busId+"#"+std::to_string(counter++);
+        out.push_back(std::move(f));
+    }
+
+    // Lane per (SS:VL|bus)
+    std::unordered_map<std::string,int> lane;
+    for (auto& f : out){
+        std::string key = keyVL(f.ss,f.vl)+"|"+f.busId;
+        f.laneIndex = lane[key]++;
+    }
 
     return scl::Status::Ok();
 }
 
-void SldBuilder::detectCouplers_(const Graph &condensed,
-                                 const std::vector<BusCluster> &clusters,
-                                 std::vector<BusCoupler> &out) const {
-    // map bus node ids by VL for quick check
-    std::unordered_map<std::string, std::unordered_set<NodeId>> vlBuses;
-    for (const auto &cl : clusters)
-        vlBuses[keyVL(cl.ssName, cl.vlName)].insert(cl.busNodeId);
-
-    // Build CE->Bus adjacency from condensed edges
-    std::unordered_map<NodeId, std::unordered_set<NodeId>> ceToBus;
-    for (const auto &e : condensed.edges)
-        if (e.kind == EdgeKind::Equip_to_Bus)
-            ceToBus[e.from].insert(e.to);
-
-    for (const auto &kv : condensed.nodes) {
-        const Node &n = kv.second;
-        if (n.kind != NodeKind::Equipment)
-            continue;
-        auto it = ceToBus.find(n.id);
-        if (it == ceToBus.end())
-            continue;
-        // coupler si CE (CB/DS) touche deux bus distincts du même VL
-        if (n.eKind == EquipmentKind::CB || n.eKind == EquipmentKind::DS) {
-            const auto &buses = it->second;
-            if (buses.size() >= 2) {
-                // vérifier même VL
-                bool allSameVL = true;
-                std::string key = keyVL(n.ssName, n.vlName);
-                for (const auto &b : buses) {
-                    if (!vlBuses[key].count(b)) {
-                        allSameVL = false;
-                        break;
-                    }
-                }
-
-                // debug temporaire
-                std::cerr << "[COUPLER?] " << n.id << " buses=";
-                for (auto& bId : buses) std::cerr << bId << " ";
-                std::cerr << " | keyVL=" << key << " ok=" << allSameVL << "\n";
-
-
-                if (allSameVL) {
-                    auto bi = buses.begin();
-                    NodeId bA = *bi++;
-                    NodeId bB = *bi; // prendre deux
-                    out.push_back(BusCoupler{n.id, bA, bB, (n.eKind == EquipmentKind::CB),
-                                             n.ssName, n.vlName});
-                }
-            }
-        }
-    }
-}
-
-void SldBuilder::detectFeeders_(const Graph &raw, const Graph &condensed,
-                                const std::vector<BusCluster> &clusters,
-                                std::vector<Feeder> &out) const {
-    // Build adjacency raw for traversal
-    RawView v = buildRawView_(raw);
-
-    // map CN->Bus for quick avoid-back-to-bus
+// -------- 3c) Transformers --------
+scl::Status SldBuilder::detectTransformers(const BoostGraph& raw, const Index& rawIdx,
+                                           const std::vector<BusCluster>& clusters,
+                                           std::vector<TransformerLink>& out) const {
+    // CN->Bus
     std::unordered_map<NodeId, NodeId> cnToBus;
-    for (const auto &cl : clusters)
-        for (const auto &cn : cl.cnMembers)
+    for (const auto& cl : clusters)
+        for (const auto& cn : cl.cnMembers)
             cnToBus[cn] = cl.busNodeId;
 
-    // Build CE->Bus mapping from condensed
-    std::unordered_map<NodeId, std::vector<NodeId>> ceToBus;
-    for (const auto &e : condensed.edges)
-        if (e.kind == EdgeKind::Equip_to_Bus)
-            ceToBus[e.from].push_back(e.to);
-
-    // Helper lambdas
-    auto isPass = [&](EquipmentKind k) {
-        for (auto x : cfg_.seriesPassKinds)
-            if (x == k)
-                return true;
-        return false;
-    };
-    auto isEnd = [&](EquipmentKind k) {
-        for (auto x : cfg_.endpointKinds)
-            if (x == k)
-                return true;
-        return false;
-    };
-
-    // For each CE connected to a bus, try to trace outward as a linear chain
-    int feederCounter = 1;
-    std::unordered_set<NodeId> usedStart; // avoid duplicates
-
-    for (const auto &kv : condensed.nodes) {
-        const Node &ceNode = kv.second;
-        if (ceNode.kind != NodeKind::Equipment)
-            continue;
-        auto itB = ceToBus.find(ceNode.id);
-        if (itB == ceToBus.end())
-            continue; // not starting at bus
-
-        // avoid bus couplers as feeders; they will be handled elsewhere
-        if (ceNode.eKind == EquipmentKind::CB ||
-            ceNode.eKind == EquipmentKind::DS) {
-            // it might be coupler; skip from feeder start if touches 2+ buses
-            if (itB->second.size() >= 2)
-                continue;
+    // CE transformer -> buses sur ses CN
+    RawAdj adj = buildAdj(raw, rawIdx);
+    for (auto vIt=vertices(raw); vIt.first!=vIt.second; ++vIt.first){
+        V v = *vIt.first;
+        const auto& pv = raw[v];
+        if (pv.kind!=NodeKind::Equipment || pv.eKind!=EquipmentKind::Transformer) continue;
+        std::set<NodeId> buses;
+        auto itCNs = adj.ceToCN.find(pv.id);
+        if (itCNs==adj.ceToCN.end()) continue;
+        for (const auto& cnId : itCNs->second){
+            auto itb = cnToBus.find(cnId);
+            if (itb!=cnToBus.end()) buses.insert(itb->second);
         }
-
-        // do a directed walk away from bus side
-        // gather CN neighbors in raw
-        auto itCNs = v.ceToCN.find(ceNode.id);
-        if (itCNs == v.ceToCN.end())
-            continue;
-        // pick a CN that is NOT a bus CN as outward direction
-        NodeId startCN;
-        for (const auto &cnId : itCNs->second)
-            if (!cnToBus.count(cnId)) {
-                startCN = cnId;
-                break;
-            }
-        if (startCN.empty())
-            continue; // all CNs were bus — likely coupler or busbar
-
-        // BFS/DFS linear walk
-        std::unordered_set<NodeId> visitedCE;
-        std::unordered_set<NodeId> visitedCN;
-        visitedCE.insert(ceNode.id);
-        visitedCN.insert(startCN);
-        std::vector<NodeId> chain;
-        chain.push_back(ceNode.id);
-        NodeId currCN = startCN;
-        int depth = 0;
-        EquipmentKind endpointK = EquipmentKind::Unknown;
-        while (depth++ < cfg_.feederMaxDepth) {
-            // step: CN -> CE (excluding ones already in chain and excluding CE that
-            // returns to bus exclusively)
-            auto itCEs = v.cnToCE.find(currCN);
-            if (itCEs == v.cnToCE.end())
-                break;
-            NodeId nextCE;
-            for (const auto &cand : itCEs->second) {
-                if (visitedCE.count(cand))
-                    continue;
-                // if cand connects to a bus and cand != first CE, stop (branch back to
-                // bus)
-                if (ceToBus.count(cand) && cand != chain.front())
-                    continue;
-                nextCE = cand;
-                break;
-            }
-            if (nextCE.empty())
-                break;
-            visitedCE.insert(nextCE);
-            chain.push_back(nextCE);
-            const Node &nx = raw.nodes.at(nextCE);
-            if (isEnd(nx.eKind)) {
-                endpointK = nx.eKind;
-                break;
-            }
-            // find next CN (not the one we came from, and not a bus CN)
-            auto itCN2s = v.ceToCN.find(nextCE);
-            if (itCN2s == v.ceToCN.end())
-                break;
-            NodeId nextCN;
-            for (const auto &cn2 : itCN2s->second) {
-                if (visitedCN.count(cn2))
-                    continue;
-                if (cnToBus.count(cn2))
-                    continue;
-                nextCN = cn2;
-                break;
-            }
-            if (nextCN.empty())
-                break;
-            visitedCN.insert(nextCN);
-            currCN = nextCN;
-            if (!isPass(nx.eKind)) {
-                // If non-pass kind encountered and not endpoint, still proceed but mark
-                // as potential end
-            }
-        }
-
-        // Si on n'a pas pu avancer et que le premier CE est déjà un endpoint (ex: Transformer)
-        if (chain.size()==1 && endpointK==EquipmentKind::Unknown) {
-            const Node& start = raw.nodes.at(chain.front());
-            // marquer Transformer/Line/etc. comme endpoint
-            for (auto x : cfg_.endpointKinds)
-                if (x == start.eKind) { endpointK = start.eKind; break; }
-        }
-
-
-        if (chain.size() >= 1) {
-            Feeder f;
-            f.busId = itB->second.front();
-            f.ssName = ceNode.ssName;
-            f.vlName = ceNode.vlName;
-            f.chain = chain;
-            f.endpointType = toString(endpointK);
-            f.id = std::string("FEED:") + f.busId + "#" +
-                   std::to_string(feederCounter++);
-
-            out.push_back(std::move(f));
-        }
-    }
-
-    // assign lane indices per (SS:VL, bus)
-    std::unordered_map<std::string, int> laneCounter;
-    for (auto &f : out) {
-        std::string key = keyVL(f.ssName, f.vlName) + "|" + f.busId;
-        f.laneIndex = laneCounter[key]++;
-    }
-}
-
-void SldBuilder::detectTransformers_(const Graph &raw,
-                                     const std::vector<BusCluster> &clusters,
-                                     std::vector<TransformerLink> &out) const {
-    // Build CN->Bus map and CE->CN adjacency
-    RawView v = buildRawView_(raw);
-    std::unordered_map<NodeId, NodeId> cnToBus;
-    for (const auto &cl : clusters)
-        for (const auto &cn : cl.cnMembers)
-            cnToBus[cn] = cl.busNodeId;
-
-    // For each transformer CE, see buses on its terminals
-    for (const auto &kv : raw.nodes) {
-        const Node &n = kv.second;
-        if (n.kind != NodeKind::Equipment || n.eKind != EquipmentKind::Transformer)
-            continue;
-        auto it = v.ceToCN.find(n.id);
-        if (it == v.ceToCN.end())
-            continue;
-        std::unordered_set<NodeId> buses;
-        for (const auto &cn : it->second) {
-            auto itb = cnToBus.find(cn);
-            if (itb != cnToBus.end())
-                buses.insert(itb->second);
-        }
-        if (buses.size() >= 2) {
-            auto bi = buses.begin();
-            NodeId bA = *bi++;
-            NodeId bB = *bi; // pick two
+        if (buses.size()>=2){
+            auto it=buses.begin();
             TransformerLink tl;
-            tl.transformerId = n.id;
-            tl.busA = bA;
-            tl.busB = bB;
-            // déduire VL depuis nodes
-            const Node &a = raw.nodes.at(bA);
-            const Node &b = raw.nodes.at(bB);
-            tl.ssA = a.ssName;
-            tl.vlA = a.vlName;
-            tl.ssB = b.ssName;
-            tl.vlB = b.vlName;
+            tl.transformerId = pv.id;
+            tl.busA = *it++; tl.busB = *it;
+            const auto& a = raw[*findVertex(rawIdx, tl.busA)];
+            const auto& b = raw[*findVertex(rawIdx, tl.busB)];
+            tl.ssA=a.ss; tl.vlA=a.vl; tl.ssB=b.ss; tl.vlB=b.vl;
             out.push_back(std::move(tl));
         }
     }
+    return scl::Status::Ok();
 }
 
-// petit utilitaire: existe dans un set/vector ?
-static bool containsCN(const std::unordered_set<NodeId>& S, const NodeId& id) {
-    return S.find(id) != S.end();
-}
-static bool containsCN(const std::vector<NodeId>& V, const NodeId& id) {
-    return std::find(V.begin(), V.end(), id) != V.end();
-}
-
-// Adapter ici SI ton BusCluster n'expose pas cnIds :
-template <typename ClusterT>
-static bool clusterContainsCN(const ClusterT& c, const NodeId& cn) {
-    // Essayez cnIds (unordered_set)
-    if constexpr (std::is_same_v<decltype(c.cnMembers), std::unordered_set<NodeId>>) {
-        return containsCN(c.cnMembers, cn);
-    } else {
-        // Ou cnIds en vector
-        return containsCN(c.cnMembers, cn);
-    }
-}
-
-void SldBuilder::integratePowerTransformers_(const std::vector<BusCluster>& clusters,
-                                             SldPlan& out) const
-{
-    if (!model_) return;
-
-    // Index bus -> (ss, vl) pour compléter Feeder.vlName proprement
-    BusIndex busIndex{clusters};
-
-    // Évite de créer deux fois le même feeder "Transformer" pour (bus, transfo)
-    std::unordered_set<std::string> dedup;
-
-    // Pour compter localement les feeders par transfo (unique ID stable)
-    std::unordered_map<std::string, int> perTrCounter; // key = busId + "|" + trName
-
-    // Parcourt toutes les Substations et PowerTransformer
-    for (const auto& ss : model_->substations) {
-        const std::string& ssName = ss.name;
-
-        // Si le modèle SCL n’a pas (encore) powerTransformers, on saute.
-        if (ss.powerTransformers.empty())
-            continue;
-
-        for (const auto& pt : ss.powerTransformers) {
-            const std::string trNodeId = makeTransformerNodeId(ssName, pt.name);
-            std::vector<std::string> busesForTr;
-            bool hasTapChanger = false;
-
-            // --- Collecte des “ends” (chaque winding possède 1..n terminaux)
-            for (const auto& w : pt.windings) {
-                if (w.tapChanger) hasTapChanger = true;
-
-                // Deux cas :
-                //  (A) Tu as ajouté w.resolvedEnds (ss, vl, bay, cn) en post-parse -> on l'utilise
-                //  (B) Sinon fallback via Terminal.cNodeName / connectivityNode
-                if (!w.resolvedEnds.empty()) {
-                    for (const auto& re : w.resolvedEnds) {
-                        // CN NodeId exact si on a ss/vl/bay/cn
-                        NodeId cnId = makeCNId(re.ss, re.vl, re.bay, re.cn);
-
-                        // On cherche le cluster (bus) qui contient ce CN exact.
-                        const BusCluster* busCl = nullptr;
-                        for (const auto& cl : clusters) {
-                            if (clusterHasCN_exact(cl, cnId)) { busCl = &cl; break; }
-                        }
-
-                        // Fallback: si pas trouvé, et si on a au moins un nom de CN, essai sur suffixe
-                        if (!busCl) {
-                            auto opt = findClusterByCnNameSuffix(clusters, ssName, re.cn);
-                            if (opt) busCl = *opt;
-                        }
-
-                        if (!busCl) continue;
-
-                        const std::string& busId = busCl->busNodeId;
-                        // Dédoublonner les feeders "TR" pour ce (bus, transfo)
-                        std::string key = busId + "|" + pt.name;
-                        int count = ++perTrCounter[key];
-                        const std::string feederId = "FEED:" + busId + "#TR#" + pt.name + "#" + std::to_string(count);
-
-                        if (dedup.insert(feederId).second) {
-                            Feeder f;
-                            f.id = feederId;
-                            f.ssName = ssName;
-                            // VL depuis l’index bus si possible, sinon l’adresse résolue
-                            auto itBus = busIndex.byBusId.find(busId);
-                            f.vlName = (itBus != busIndex.byBusId.end()) ? itBus->second.second : re.vl;
-                            f.busId = busId;
-                            f.chain.clear();
-                            f.chain.push_back(trNodeId);
-                            f.endpointType = "Transformer";
-                            f.laneIndex = 0; // le layout fera la répartition
-                            out.feeders.push_back(std::move(f));
-                        }
-
-                        if (std::find(busesForTr.begin(), busesForTr.end(), busId) == busesForTr.end())
-                            busesForTr.push_back(busId);
-                    }
-                } else {
-                    // --- Fallback si resolvedEnds non disponible : on utilise les Terminals
-                    for (const auto& t : w.terminals) {
-                        // 1) On tente de parser directement le NodeId exact si tu as bay/vl dans le chemin
-                        std::string cnName = t.cNodeName;
-                        std::string guessVL, guessBay;
-
-                        // Si ton parseur SCL expose déjà t.connectivityPath:
-                        // format ".../<VL>/<BAY>/<CN>"
-                        if (!t.connectivityPath.empty()) {
-                            // Récupérer les 3 derniers segments
-                            std::vector<std::string> segs;
-                            std::string cur;
-                            for (char c : t.connectivityPath) {
-                                if (c == '/') { if (!cur.empty()) { segs.push_back(cur); cur.clear(); } }
-                                else cur.push_back(c);
-                            }
-                            if (!cur.empty()) segs.push_back(cur);
-                            if (segs.size() >= 3) {
-                                cnName  = segs.back();
-                                guessBay = segs[segs.size() - 2];
-                                guessVL  = segs[segs.size() - 3];
-                            }
-                        }
-
-                        NodeId cnId;
-                        if (!guessVL.empty() && !guessBay.empty() && !cnName.empty())
-                            cnId = makeCNId(ssName, guessVL, guessBay, cnName);
-
-                        const BusCluster* busCl = nullptr;
-                        if (!cnId.empty()) {
-                            for (const auto& cl : clusters) {
-                                if (clusterHasCN_exact(cl, cnId)) { busCl = &cl; break; }
-                            }
-                        }
-                        if (!busCl && !cnName.empty()) {
-                            auto opt = findClusterByCnNameSuffix(clusters, ssName, cnName);
-                            if (opt) busCl = *opt;
-                        }
-                        if (!busCl) continue;
-
-                        const std::string& busId = busCl->busNodeId;
-                        std::string key = busId + "|" + pt.name;
-                        int count = ++perTrCounter[key];
-                        const std::string feederId = "FEED:" + busId + "#TR#" + pt.name + "#" + std::to_string(count);
-
-                        if (dedup.insert(feederId).second) {
-                            Feeder f;
-                            f.id = feederId;
-                            f.ssName = ssName;
-                            auto itBus = busIndex.byBusId.find(busId);
-                            f.vlName = (itBus != busIndex.byBusId.end()) ? itBus->second.second : guessVL;
-                            f.busId = busId;
-                            f.chain = { makeTransformerNodeId(ssName, pt.name) };
-                            f.endpointType = "Transformer";
-                            f.laneIndex = 0;
-                            out.feeders.push_back(std::move(f));
-                        }
-                        if (std::find(busesForTr.begin(), busesForTr.end(), busId) == busesForTr.end())
-                            busesForTr.push_back(busId);
-                    }
-                }
-            }
-
-            // Résumé consolidé dans plan_transformers (utile pour rendu inter-bus futur)
-            if (!busesForTr.empty()) {
-                PlanTransformer p;
-                p.id = trNodeId;
-                p.ss = ssName;
-                p.label = pt.name;
-                p.hasTapChanger = hasTapChanger;
-                p.buses = std::move(busesForTr);
-                out.plan_transformers.push_back(std::move(p));
-            }
-        }
-    }
-}
-
-
-SldPlan SldBuilder::makePlan(const Graph &condensed,
-                             const std::vector<BusCluster> &clusters) const {
-    SldPlan plan;
-    plan.graph = condensed;
+// -------- 4) makePlan --------
+scl::Status SldBuilder::makePlan(const BoostGraph& raw, const Index& rawIdx,
+                                 const BoostGraph& condensed, const Index& cIdx,
+                                 const std::vector<BusCluster>& clusters,
+                                 SldPlan& plan,
+                                 const scl::SclManager* sclMgr) const {
+    plan.condensed = condensed; // copie légère (BGL stocke contigu vecS)
+    plan.idx = cIdx;
     plan.buses = clusters;
 
-    // après avoir rempli plan.buses
-    std::sort(plan.buses.begin(), plan.buses.end(),
-              [](const BusCluster &a, const BusCluster &b) {
-        if (a.vlName != b.vlName)
-            return a.vlName < b.vlName;
-        return a.label < b.label;
-              });
-
-    // Classement simple par VL
-    for (const auto &kv : condensed.nodes) {
-        const Node &n = kv.second;
-        std::string key = keyVL(n.ssName, n.vlName);
-        if (n.kind == NodeKind::Bus)
-            plan.rankTopBus[key].push_back(n.id);
-        else if (n.kind == NodeKind::Equipment)
-            plan.rankMiddleEq[key].push_back(n.id);
+    // ranks
+    for (auto vIt=vertices(condensed); vIt.first!=vIt.second; ++vIt.first){
+        const auto& pv = condensed[*vIt.first];
+        auto key = keyVL(pv.ss, pv.vl);
+        if (pv.kind==NodeKind::Bus) plan.rankTopBus[key].push_back(pv.id);
+        else if (pv.kind==NodeKind::Equipment) plan.rankMiddleEq[key].push_back(pv.id);
     }
 
-    // Couplers
-    detectCouplers_(condensed, clusters, plan.couplers);
+    // couplers / feeders / transformers
+    detectCouplers(condensed, cIdx, clusters, plan.couplers);
+    detectFeeders(raw, rawIdx, condensed, cIdx, clusters, plan.feeders);
+    detectTransformers(raw, rawIdx, clusters, plan.transformers);
 
-    // Feeders (basés sur graphe brut pour la marche détaillée)
-    // On reconstruit rapidement un raw équivalent au condensed ? Non, on requiert
-    // l'appelant d’en fournir un si nécessaire. Ici, on reconstruit raw minimal:
-    // on n’a pas ici 'raw'; l’appelant passera par SldManager qui possède raw.
+    // PowerTransformers -> plan_transformers (en utilisant SCL résolu)
+    if (sclMgr){
+        // réutilise la logique du module SCL (ends déjà résolus)
+        // Ici on expose seulement l’agrégat pour rendu global
+        for (const auto& ss : sclMgr->model()->substations){
+            for (const auto& pt : ss.powerTransformers){
+                PlanTransformer P;
+                P.id = "TR:"+ss.name+"/"+pt.name;
+                P.ss = ss.name;
+                P.label = pt.name;
+                P.hasTapChanger = false;
+                for (const auto& w : pt.windings)
+                    if (w.tapChanger){ P.hasTapChanger = true; break; }
 
-    integratePowerTransformers_(clusters, plan);
+                // buses reliés (si détectables dans clusters)
+                std::unordered_set<std::string> busSet;
+                for (const auto& w : pt.windings){
+                    for (const auto& re : w.resolvedEnds){
+                        const NodeId cnId = makeCNIdAbs(re.ss, re.vl, re.bay, re.cn);
+                        for (const auto& cl : clusters){
+                            if (std::find(cl.cnMembers.begin(), cl.cnMembers.end(), cnId) != cl.cnMembers.end()){
+                                busSet.insert(cl.busNodeId);
+                            }
+                        }
+                    }
+                }
+                for (auto& b : busSet) P.buses.push_back(b);
+                if (!P.buses.empty()) plan.plan_transformers.push_back(std::move(P));
+            }
+        }
 
-    return plan;
+        // Ajoute aussi la vue IEDs (extrait par SCL) → QML l’utilisera dans une autre vue
+        plan.equipmentsFromIEDs = sclMgr->collectEquipmentFromIEDs(true);
+    }
+
+    return scl::Status::Ok();
 }
 
-std::string SldBuilder::toJson(const Graph& g) const {
-    JsonWriter w;
-    w.beginObject();
-
-    // nodes
-    w.key("nodes").beginArray();
-    for (const auto& kv : g.nodes) {
-        const Node& n = kv.second;
-        w.beginObject();
-        w.key("id").value(n.id);
-        w.key("kind").value(toString(n.kind));
-        if (!n.label.empty()) w.key("label").value(n.label);
-        if (!n.ssName.empty()) w.key("ss").value(n.ssName);
-        if (!n.vlName.empty()) w.key("vl").value(n.vlName);
-        if (!n.bayName.empty()) w.key("bay").value(n.bayName);
-        if (n.kind == NodeKind::Equipment)
-            w.key("eKind").value(toString(n.eKind));
-        w.endObject();
+// ---------- JSON ----------
+json SldBuilder::toJsonRaw(const BoostGraph& g) const {
+    json J; J["nodes"] = json::array(); J["edges"] = json::array();
+    for (auto vIt=vertices(g); vIt.first!=vIt.second; ++vIt.first){
+        const auto& pv = g[*vIt.first];
+        json n{{"id",pv.id},{"kind",toString(pv.kind)}};
+        if (!pv.label.empty()) n["label"]=pv.label;
+        if (!pv.ss.empty()) n["ss"]=pv.ss;
+        if (!pv.vl.empty()) n["vl"]=pv.vl;
+        if (!pv.bay.empty()) n["bay"]=pv.bay;
+        if (pv.kind==NodeKind::Equipment) n["eKind"]=toString(pv.eKind);
+        if (!pv.lnodes.empty()){
+            n["lnodes"] = json::array();
+            for (const auto& lr: pv.lnodes){
+                json jl;
+                if (!lr.iedName.empty()) jl["ied"]=lr.iedName;
+                if (!lr.ldInst.empty())  jl["ld"]=lr.ldInst;
+                if (!lr.prefix.empty())  jl["prefix"]=lr.prefix;
+                if (!lr.lnClass.empty()) jl["lnClass"]=lr.lnClass;
+                if (!lr.lnInst.empty())  jl["lnInst"]=lr.lnInst;
+                n["lnodes"].push_back(std::move(jl));
+            }
+        }
+        J["nodes"].push_back(std::move(n));
     }
-    w.endArray();
-
-    // edges
-    w.key("edges").beginArray();
-    for (const auto& e : g.edges) {
-        w.beginObject();
-        w.key("id").value(e.id);
-        w.key("from").value(e.from);
-        w.key("to").value(e.to);
-        w.key("kind").value(edgeKindToString(e.kind));
-        if (!e.terminalName.empty()) w.key("terminal").value(e.terminalName);
-        if (!e.cnPath.empty())       w.key("cn").value(e.cnPath);
-        w.endObject();
+    for (auto eIt=edges(g); eIt.first!=eIt.second; ++eIt.first){
+        const auto& pe = g[*eIt.first];
+        V a = source(*eIt.first, g), b = target(*eIt.first, g);
+        json e{{"id",pe.id},{"from",g[a].id},{"to",g[b].id}};
+        switch (pe.kind){
+            case EdgeKind::CE_to_CN: e["kind"]="CE_to_CN"; break;
+            case EdgeKind::Equip_to_Bus: e["kind"]="Equip_to_Bus"; break;
+            case EdgeKind::CN_Merge: e["kind"]="CN_Merge"; break;
+        }
+        if (!pe.terminalName.empty()) e["terminal"]=pe.terminalName;
+        if (!pe.cnPath.empty())       e["cn"]=pe.cnPath;
+        J["edges"].push_back(std::move(e));
     }
-    w.endArray();
-
-    w.endObject();
-    return w.str();
+    return J;
 }
 
-std::string SldBuilder::planToJson(const SldPlan& p) const {
-    JsonWriter w;
-    w.beginObject();
+json SldBuilder::toJsonCondensed(const BoostGraph& g) const {
+    // identique au raw, juste le contenu du graphe diffère
+    return toJsonRaw(g);
+}
+
+json SldBuilder::toJsonPlan(const SldPlan& p) const {
+    json J;
+
+    // condensed graph
+    J["graph"] = toJsonCondensed(p.condensed);
 
     // buses
-    w.key("buses").beginArray();
-    for (const auto& b : p.buses) {
-        w.beginObject();
-        w.key("id").value(b.busNodeId);
-        if (!b.ssName.empty()) w.key("ss").value(b.ssName);
-        if (!b.vlName.empty()) w.key("vl").value(b.vlName);
-        if (!b.label.empty())  w.key("label").value(b.label);
-
-        w.key("members").beginArray();
-        for (const auto& m : b.cnMembers) w.value(m);
-        w.endArray();
-
-        w.endObject();
+    J["buses"] = json::array();
+    for (const auto& b : p.buses){
+        json jb{{"id",b.busNodeId},{"ss",b.ss},{"vl",b.vl},{"label",b.label}};
+        jb["members"]=b.cnMembers;
+        J["buses"].push_back(std::move(jb));
     }
-    w.endArray();
+
+    // ranks
+    J["ranks"] = json::object();
+    for (const auto& kv : p.rankTopBus)   J["ranks"]["top"][kv.first]    = kv.second;
+    for (const auto& kv : p.rankMiddleEq) J["ranks"]["middle"][kv.first] = kv.second;
 
     // couplers
-    w.key("couplers").beginArray();
-    for (const auto& c : p.couplers) {
-        w.beginObject();
-        w.key("equip").value(c.couplerEquipId);
-        w.key("busA").value(c.busA);
-        w.key("busB").value(c.busB);
-        w.key("type").value(c.isBreaker ? "CB" : "DS");
-        if (!c.ssName.empty()) w.key("ss").value(c.ssName);
-        if (!c.vlName.empty()) w.key("vl").value(c.vlName);
-        w.endObject();
+    J["couplers"] = json::array();
+    for (const auto& c : p.couplers){
+        json jc{{"equip",c.couplerEquipId},{"busA",c.busA},{"busB",c.busB}};
+        jc["type"] = c.isBreaker? "CB":"DS";
+        jc["ss"] = c.ss; jc["vl"] = c.vl;
+        J["couplers"].push_back(std::move(jc));
     }
-    w.endArray();
 
-    // transformers
-    w.key("transformers").beginArray();
-    for (const auto& t : p.transformers) {
-        w.beginObject();
-        w.key("tr").value(t.transformerId);
-        if (!t.busA.empty()) w.key("busA").value(t.busA);
-        if (!t.busB.empty()) w.key("busB").value(t.busB);
-        if (!t.vlA.empty())  w.key("vlA").value(t.vlA);
-        if (!t.vlB.empty())  w.key("vlB").value(t.vlB);
-        w.endObject();
+    // transformers links
+    J["transformers"] = json::array();
+    for (const auto& t : p.transformers){
+        json jt{{"tr",t.transformerId},{"busA",t.busA},{"busB",t.busB},
+                {"vlA",t.vlA},{"vlB",t.vlB}};
+        J["transformers"].push_back(std::move(jt));
     }
-    w.endArray();
 
     // feeders
-    w.key("feeders").beginArray();
-    for (const auto& f : p.feeders) {
-        w.beginObject();
-        w.key("id").value(f.id);
-        if (!f.busId.empty()) w.key("bus").value(f.busId);
-        if (!f.ssName.empty()) w.key("ss").value(f.ssName);
-        if (!f.vlName.empty()) w.key("vl").value(f.vlName);
-        w.key("lane").value(f.laneIndex);
-        if (!f.endpointType.empty()) w.key("endpoint").value(f.endpointType);
-
-        w.key("chain").beginArray();
-        for (const auto& n : f.chain) w.value(n);
-        w.endArray();
-
-        w.endObject();
+    J["feeders"] = json::array();
+    for (const auto& f : p.feeders){
+        json jf{{"id",f.id},{"bus",f.busId},{"ss",f.ss},{"vl",f.vl},
+                {"lane",f.laneIndex},{"endpoint",f.endpointType}};
+        jf["chain"] = f.chain;
+        J["feeders"].push_back(std::move(jf));
     }
-    w.endArray();
 
-    w.endObject();
-    return w.str();
+    // plan_transformers (aggrégé)
+    J["plan_transformers"] = json::array();
+    for (const auto& t : p.plan_transformers){
+        json jt{{"id",t.id},{"ss",t.ss},{"label",t.label},{"hasTapChanger",t.hasTapChanger}};
+        jt["buses"] = t.buses;
+        J["plan_transformers"].push_back(std::move(jt));
+    }
+
+    // IEDs view (du SCL) à embarquer pour QML
+    if (!p.equipmentsFromIEDs.empty()){
+        J["ieds"] = json::array();
+        // Regrouper par IED -> LD
+        std::map<std::string,std::map<std::string,std::vector<scl::EquipmentFromIED>>> byIed;
+        for (auto e : p.equipmentsFromIEDs) byIed[e.iedName][e.ldInst].push_back(std::move(e));
+        for (auto& [ied,lds] : byIed){
+            json jIed; jIed["name"]=ied; jIed["lds"]=json::array();
+            for (auto& [ldInst, eqs] : lds){
+                json jLd; jLd["inst"]=ldInst; jLd["equipments"]=json::array();
+                for (auto& e : eqs){
+                    json je{{"lnClass",e.lnClass},{"lnInst",e.lnInst}};
+                    if (!e.prefix.empty()) je["prefix"]=e.prefix;
+                    if (!e.primaryAnchors.empty()) je["anchors"]=e.primaryAnchors;
+                    jLd["equipments"].push_back(std::move(je));
+                }
+                jIed["lds"].push_back(std::move(jLd));
+            }
+            J["ieds"].push_back(std::move(jIed));
+        }
+    }
+
+    return J;
 }

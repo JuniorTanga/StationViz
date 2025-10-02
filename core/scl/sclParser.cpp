@@ -1,88 +1,13 @@
 #include "SclParser.h"
 #include "pugixml/pugixml.hpp"
 #include <sstream>
+#include <vector>
+#include <optional>
 
 using namespace scl;
 
-// MODIFIED: SclParser.cpp (ajouts helpers LN0)
-
-static void readDataSetsUnderLN0(const pugi::xml_node& ln0, std::vector<DataSet>& out) {
-    for (auto ds : ln0.children("DataSet")) {
-        DataSet D{};
-        D.name = ds.attribute("name").as_string("");
-        for (auto f : ds.children("FCDA")) {
-            FcdaRef r{};
-            r.ldInst = f.attribute("ldInst").as_string("");      // optionnel
-            r.lnClass = f.attribute("lnClass").as_string("");
-            r.lnInst = f.attribute("lnInst").as_string("");
-            r.doName = f.attribute("doName").as_string("");
-            r.daName = f.attribute("daName").as_string("");
-            r.fc = f.attribute("fc").as_string("");
-            D.members.push_back(std::move(r));
-        }
-        out.push_back(std::move(D));
-    }
-}
-
-static void readGseCtrlsUnderLN0(const pugi::xml_node& ln0, std::vector<GseControlMeta>& out) {
-    for (auto gse : ln0.children("GSEControl")) {
-        GseControlMeta G{};
-        G.name = gse.attribute("name").as_string("");
-        G.datSet = gse.attribute("datSet").as_string("");
-        G.appID = gse.attribute("appID").as_string(""); // parfois non utilisé ici
-        out.push_back(std::move(G));
-    }
-}
-
-static void readSmvCtrlsUnderLN0(const pugi::xml_node& ln0, std::vector<SmvControlMeta>& out) {
-    for (auto sv : ln0.children("SampledValueControl")) {
-        SmvControlMeta V{};
-        V.name = sv.attribute("name").as_string("");
-        V.datSet = sv.attribute("datSet").as_string("");
-        V.appID = sv.attribute("smvID").as_string(""); // alias selon profils
-        out.push_back(std::move(V));
-    }
-}
-
-// MODIFIED: readLogicalNodes -> on laisse comme avant pour LN*, LN0 est traité dans readLDevicesUnder
-
-static void readLDevicesUnder(const pugi::xml_node &parent,
-                              std::vector<LogicalDevice> &out) {
-    for (auto ld : parent.children("LDevice")) {
-        LogicalDevice d{};
-        d.inst = ld.attribute("inst").as_string("");
-
-        // LN0 meta (DataSet/GSEControl/SMVControl)
-        if (auto ln0 = ld.child("LN0")) {
-            readDataSetsUnderLN0(ln0, d.ln0.datasets);
-            readGseCtrlsUnderLN0(ln0, d.ln0.gseCtrls);
-            readSmvCtrlsUnderLN0(ln0, d.ln0.smvCtrls);
-
-            // Et on pousse LN0 comme LogicalNode (inst = "")
-            LogicalNode ln{};
-            ln.prefix = ln0.attribute("prefix").as_string("");
-            ln.lnClass = ln0.attribute("lnClass").as_string("");
-            ln.inst = "";
-            d.lns.push_back(std::move(ln));
-        }
-
-        // LN*
-        for (auto lnNode : ld.children("LN")) {
-            LogicalNode l{};
-            l.prefix = lnNode.attribute("prefix").as_string("");
-            l.lnClass = lnNode.attribute("lnClass").as_string("");
-            l.inst = lnNode.attribute("inst").as_string("");
-            d.lns.push_back(std::move(l));
-        }
-
-        out.push_back(std::move(d));
-    }
-}
-
-// scl/PathUtils.h
-inline std::optional<CNAddress> parseConnectivityPath(const std::string& path) {
-    // format attendu: ".../<VL>/<BAY>/<CONNECTIVITY_NODEXX>"
-    // On prend les 3 derniers segments non vides
+// ---- utils
+static std::optional<CNAddress> parseConnectivityPath(const std::string& path) {
     std::vector<std::string> segs;
     std::string cur;
     for (char c : path) {
@@ -96,11 +21,8 @@ inline std::optional<CNAddress> parseConnectivityPath(const std::string& path) {
     a.cn  = segs.back();
     a.bay = segs[segs.size()-2];
     a.vl  = segs[segs.size()-3];
-    // SS : on tente via préfixe ou l’attribut substationName du Terminal
-    // Ici on ne peut pas inférer directement, on le remplira au call-site.
     return a;
 }
-
 
 namespace {
 
@@ -175,32 +97,72 @@ static std::optional<ScalarWithUnit> readVoltageNode(const pugi::xml_node &vl) {
     return std::nullopt;
 }
 
-static void readLogicalNodes(const pugi::xml_node &ldNode,
-                             std::vector<LogicalNode> &out) {
-    // LN0
-    if (auto ln0 = ldNode.child("LN0")) {
-        LogicalNode ln{};
-        ln.prefix = ln0.attribute("prefix").as_string("");
-        ln.lnClass = ln0.attribute("lnClass").as_string("");
-        ln.inst = ""; // LN0
-        out.push_back(std::move(ln));
-    }
-    // LN*
-    for (auto ln : ldNode.children("LN")) {
-        LogicalNode l{};
-        l.prefix = ln.attribute("prefix").as_string("");
-        l.lnClass = ln.attribute("lnClass").as_string("");
-        l.inst = ln.attribute("inst").as_string("");
-        out.push_back(std::move(l));
+static void readDataSetsUnderLN0(const pugi::xml_node& ln0, std::vector<DataSet>& out) {
+    for (auto ds : ln0.children("DataSet")) {
+        DataSet D{};
+        D.name = ds.attribute("name").as_string("");
+        for (auto f : ds.children("FCDA")) {
+            FcdaRef r{};
+            r.ldInst = f.attribute("ldInst").as_string("");      // optionnel
+            r.lnClass = f.attribute("lnClass").as_string("");
+            r.lnInst = f.attribute("lnInst").as_string("");
+            r.doName = f.attribute("doName").as_string("");
+            r.daName = f.attribute("daName").as_string("");
+            r.fc = f.attribute("fc").as_string("");
+            D.members.push_back(std::move(r));
+        }
+        out.push_back(std::move(D));
     }
 }
 
+static void readGseCtrlsUnderLN0(const pugi::xml_node& ln0, std::vector<GseControlMeta>& out) {
+    for (auto gse : ln0.children("GSEControl")) {
+        GseControlMeta G{};
+        G.name = gse.attribute("name").as_string("");
+        G.datSet = gse.attribute("datSet").as_string("");
+        G.appID = gse.attribute("appID").as_string("");
+        out.push_back(std::move(G));
+    }
+}
+
+static void readSmvCtrlsUnderLN0(const pugi::xml_node& ln0, std::vector<SmvControlMeta>& out) {
+    for (auto sv : ln0.children("SampledValueControl")) {
+        SmvControlMeta V{};
+        V.name = sv.attribute("name").as_string("");
+        V.datSet = sv.attribute("datSet").as_string("");
+        V.appID = sv.attribute("smvID").as_string(""); // alias selon profil
+        out.push_back(std::move(V));
+    }
+}
+
+// ---- LDevice reader (unique, sans doublon)
 static void readLDevicesUnder(const pugi::xml_node &parent,
                               std::vector<LogicalDevice> &out) {
     for (auto ld : parent.children("LDevice")) {
         LogicalDevice d{};
         d.inst = ld.attribute("inst").as_string("");
-        readLogicalNodes(ld, d.lns);
+        d.desc = ld.attribute("desc").as_string(""); // added 20/09/2025
+
+        if (auto ln0 = ld.child("LN0")) {
+            readDataSetsUnderLN0(ln0, d.ln0.datasets);
+            readGseCtrlsUnderLN0(ln0, d.ln0.gseCtrls);
+            readSmvCtrlsUnderLN0(ln0, d.ln0.smvCtrls);
+
+            LogicalNode ln{};
+            ln.prefix = ln0.attribute("prefix").as_string("");
+            ln.lnClass = ln0.attribute("lnClass").as_string("");
+            ln.inst = ""; // LN0
+            ln.desc = ln0.attribute("desc").as_string(""); // added 20/09/2025
+            d.lns.push_back(std::move(ln));
+        }
+        for (auto lnNode : ld.children("LN")) {
+            LogicalNode l{};
+            l.prefix = lnNode.attribute("prefix").as_string("");
+            l.lnClass = lnNode.attribute("lnClass").as_string("");
+            l.inst = lnNode.attribute("inst").as_string("");
+            l.desc = lnNode.attribute("desc").as_string(""); // added 20/09/2025
+            d.lns.push_back(std::move(l));
+        }
         out.push_back(std::move(d));
     }
 }
@@ -212,11 +174,10 @@ static void readIEDs(const pugi::xml_node &root, std::vector<IED> &out) {
         I.manufacturer = ied.attribute("manufacturer").as_string("");
         I.type = ied.attribute("type").as_string("");
 
-        // 1) LDevice directement sous IED (peu fréquent mais toléré par certains
-        // outils)
+        // (1) LDevice directement sous IED (toléré par certains outils)
         readLDevicesUnder(ied, I.ldevices);
 
-        // 2) AccessPoint/Server/LDevice (forme canonique)
+        // (2) AccessPoint/Server/LDevice (forme canonique)
         for (auto ap : ied.children("AccessPoint")) {
             AccessPoint A{};
             A.name = ap.attribute("name").as_string("");
@@ -226,7 +187,6 @@ static void readIEDs(const pugi::xml_node &root, std::vector<IED> &out) {
             }
             I.accessPoints.push_back(std::move(A));
         }
-
         out.push_back(std::move(I));
     }
 }
@@ -238,11 +198,7 @@ static Communication readCommunication(const pugi::xml_node &root) {
             SubNetwork S{};
             S.name = sn.attribute("name").as_string("");
             S.type = sn.attribute("type").as_string("");
-            // propriétés diverses
-            for (auto p : sn.children("Text")) {
-                (void)p; // placeholder si besoin
-            }
-            // parfois des P directement sous SubNetwork (BitRate, etc.)
+
             for (auto p : sn.children("P")) {
                 std::string key = p.attribute("type").as_string("");
                 if (!key.empty())
@@ -255,7 +211,6 @@ static Communication readCommunication(const pugi::xml_node &root) {
                 CAP.apName = cap.attribute("apName").as_string("");
                 CAP.address = readAddress(cap);
 
-                // GSE / SMV
                 for (auto g : cap.children("GSE")) {
                     GSE G{};
                     G.ldInst = g.attribute("ldInst").as_string("");
@@ -273,7 +228,6 @@ static Communication readCommunication(const pugi::xml_node &root) {
 
                 S.connectedAPs.push_back(std::move(CAP));
             }
-
             C.subNetworks.push_back(std::move(S));
         }
     }
@@ -290,13 +244,13 @@ static Result<SclModel> parseDoc(pugi::xml_document &doc) {
     model.version = root.attribute("version").as_string("");
     model.revision = root.attribute("revision").as_string("");
 
-    // --- Substations
+    // Substations
     for (auto ss : root.children("Substation")) {
         Substation S{};
         S.name = ss.attribute("name").as_string("");
         readLNodes(ss, S.lnodes);
 
-        // scl/SclParser.cpp (dans parseSubstationNode(...))
+        // PowerTransformers
         for (auto ptNode : ss.children("PowerTransformer")) {
             PowerTransformer pt;
             pt.name = ptNode.attribute("name").as_string();
@@ -308,14 +262,12 @@ static Result<SclModel> parseDoc(pugi::xml_document &doc) {
                 w.name = wNode.attribute("name").as_string();
                 w.type = wNode.attribute("type").as_string();
 
-                // TapChanger (optionnel)
                 if (auto tc = wNode.child("TapChanger")) {
                     TapChangerInfo tci;
                     tci.name = tc.attribute("name").as_string();
                     tci.type = tc.attribute("type").as_string();
                     w.tapChanger = tci;
                 }
-
                 for (auto tNode : wNode.children("Terminal")) {
                     TerminalRef tr;
                     tr.name = tNode.attribute("name").as_string();
@@ -329,13 +281,13 @@ static Result<SclModel> parseDoc(pugi::xml_document &doc) {
             S.powerTransformers.push_back(std::move(pt));
         }
 
-
         for (auto vl : ss.children("VoltageLevel")) {
             VoltageLevel V{};
             V.name = vl.attribute("name").as_string("");
             V.nomFreq = vl.attribute("nomFreq").as_string("");
             V.voltage = readVoltageNode(vl);
             readLNodes(vl, V.lnodes);
+
             for (auto bay : vl.children("Bay")) {
                 Bay B{};
                 B.name = bay.attribute("name").as_string("");
@@ -349,6 +301,7 @@ static Result<SclModel> parseDoc(pugi::xml_document &doc) {
         model.substations.push_back(std::move(S));
     }
 
+    // Résolution rapide des extrémités de transformateur
     for (auto &ss : model.substations) {
         for (auto &pt : ss.powerTransformers) {
             for (auto &w : pt.windings) {
@@ -361,7 +314,6 @@ static Result<SclModel> parseDoc(pugi::xml_document &doc) {
                         if (auto addr = parseConnectivityPath(tr.connectivityPath)) {
                             re.vl = addr->vl; re.bay = addr->bay; re.cn = addr->cn;
                         } else {
-                            // fallback: cNodeName seul -> on le cherchera plus tard via index
                             re.cn = tr.cNodeName;
                         }
                     } else {
@@ -373,10 +325,10 @@ static Result<SclModel> parseDoc(pugi::xml_document &doc) {
         }
     }
 
-    // --- IEDs
+    // IEDs
     readIEDs(root, model.ieds);
 
-    // --- Communication
+    // Communication
     model.communication = readCommunication(root);
 
     return Result<SclModel>(std::move(model));

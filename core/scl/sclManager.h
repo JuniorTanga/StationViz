@@ -2,6 +2,8 @@
 #include <memory>
 #include <unordered_map>
 #include <functional>
+#include <vector>
+#include <string>
 #include "Internet.h"
 #include "Result.h"
 #include "SclTypes.h"
@@ -18,11 +20,12 @@ public:
     // Accès lecture au modèle
     const SclModel* model() const { return model_ ? &(*model_) : nullptr; }
 
-    // Debug helpers
+    // Debug helpers (garde-les pour l'instant)
     Status printSubstations() const;
     Status printIEDs() const;
     Status printCommunication() const;
     Status printTopology() const; // CE ↔ CN
+    Status printEquipmentFromIEDs() const;
 
     // Requêtes simples
     Result<const Substation*> findSubstation(const std::string& name) const;
@@ -30,6 +33,19 @@ public:
 
     // Résolution d’un LNodeRef
     Result<ResolvedLNode> resolveLNodeRef(const LNodeRef& ref) const;
+	
+	// Retourne le DataSet LN0 s'il existe (nullptr sinon)
+    const DataSet* getLn0Dataset(const std::string& ied,
+                                 const std::string& ldInst,
+                                 const std::string& dsName) const;
+
+    // Construit "LD/LN.DO(.DA)[FC]" pour un FCDA (helper pour libIEC61850)
+    static std::string fcdaToMmsRef(const std::string& ldInst, const FcdaRef& f);
+
+    // Résout un DataSet LN0 en liste d'objectRefs MMS
+    std::vector<std::string> resolveDatasetMembers(const std::string& ied,
+                                                   const std::string& ldInst,
+                                                   const std::string& dsName) const;
 
     // Aides SLD/Network
     std::vector<EdgeCEtoCN> collectSldEdges() const; // liste des arêtes CE↔CN
@@ -37,10 +53,10 @@ public:
                                                        const std::string& vl,
                                                        const std::string& bay) const;
 
-    // NEW: utilitaires & accès aux nouveaux index
+    // CN
     bool matchCN(const std::string& a, const std::string& b) const;
 
-    // Network endpoints
+    // Endpoints réseau
     const std::unordered_map<std::string, GseEndpoint>& gseEndpoints() const { return gseEndpoints_; }
     const std::unordered_map<std::string, SvEndpoint>&  svEndpoints()  const { return svEndpoints_;  }
     const std::unordered_map<std::string, MmsEndpoint>& mmsEndpoints() const { return mmsEndpoints_; }
@@ -49,50 +65,76 @@ public:
     const std::unordered_map<std::string, std::vector<LNodeRef>>& lnodesByPrimary() const { return lnodesByPrimary_; }
     const std::unordered_map<std::string, std::vector<std::string>>& primaryByLrefKey() const { return primaryByLref_; }
 
+    // --- NEW: Équipements issus des IEDs (même sans <Substation>)
+    std::vector<EquipmentFromIED> collectEquipmentFromIEDs(bool skipLogical = true) const;
+
+    // --- NEW: Datasets & Mapping FCDA -> datasets
+    struct DatasetKey {
+        std::string ied, ld, name;
+        bool operator==(DatasetKey const& other) const noexcept {
+            return ied == other.ied && ld == other.ld && name == other.name;
+        }
+    };
+    struct DatasetKeyHash {
+        size_t operator()(DatasetKey const& k) const noexcept;
+    };
+
+    const std::unordered_map<DatasetKey, const DataSet*, DatasetKeyHash>& datasets() const { return datasets_; }
+    const std::unordered_multimap<std::string, DatasetKey>& fcdaToDatasets() const { return fcdaToDatasets_; }
+
     // Diagnostics
     struct Diag { ErrorCode code; std::string location; std::string message; std::string hint; };
     const std::vector<Diag>& diagnostics() const { return diags_; }
 
-    // JSON (nlohmann) – mêmes noms/retours, impl diff
+    // JSON (nlohmann)
     std::string toJsonSubstations() const;
     std::string toJsonNetwork() const;
+    std::string toJsonIEDs() const; 
+	std::string toJsonNetworkMap() const;
+
+    // Observabilité (simple)
+    using ReloadCallback = std::function<void(const SclManager&)>;
+    void onReloaded(ReloadCallback cb) { reloadCbs_.push_back(std::move(cb)); }
 
 private:
     void buildIndexes_();
 
     const LogicalDevice* findLD_(const IED& ied, const std::string& ldInst) const;
     const LogicalNode*   findLN_(const LogicalDevice& ld, const std::string& lnClass,
-                               const std::string& lnInst, const std::string& prefix) const;
+                                 const std::string& lnInst, const std::string& prefix) const;
+
+    static std::string logicalCNKey(std::string_view ss, std::string_view vl,
+                                    std::string_view bay, std::string_view cn);
 
     // Indexes
     std::unique_ptr<SclModel> model_;
     std::unordered_map<std::string, const IED*> iedByName_;
-    // CN index par chemin (pathName ou fallback composé "SS/VL/BAY/CN")
     std::unordered_map<std::string, const ConnectivityNode*> cnByPath_;
 
-    // --- NEW: interner + indexes CN canoniques
+    // CN canoniques
     StringInterner interner_;
-    // logique "SS:VL:BAY:CN" -> fullPath
-    std::unordered_map<std::string, std::string> mapCNByLogical_;
-    // fullPath -> logique
-    std::unordered_map<std::string, std::string> mapCNByFullToLogical_;
-    // suffixe "CN" -> set de fullPath
-    std::unordered_map<std::string, std::vector<std::string>> mapCNSuffix_;
+    std::unordered_map<std::string, std::string> mapCNByLogical_;       // logique "SS:VL:BAY:CN" -> fullPath
+    std::unordered_map<std::string, std::string> mapCNByFullToLogical_; // fullPath -> logique
+    std::unordered_map<std::string, std::vector<std::string>> mapCNSuffix_; // suffix -> fullPaths
 
     // Lien primaire <-> LNodeRef
     std::unordered_map<std::string, std::vector<LNodeRef>> lnodesByPrimary_;
     std::unordered_map<std::string, std::vector<std::string>> primaryByLref_;
 
-    // Endpoints réseau (keys compactes)
-    // keyGse = iedName + "|" + ldInst + "|" + cbName
-    std::unordered_map<std::string, GseEndpoint> gseEndpoints_;
-    std::unordered_map<std::string, SvEndpoint>  svEndpoints_;
-    // keyMms  = iedName + "|" + apName
-    std::unordered_map<std::string, MmsEndpoint> mmsEndpoints_;
+    // Endpoints réseau
+    std::unordered_map<std::string, GseEndpoint> gseEndpoints_; // key: ied|ld|cb
+    std::unordered_map<std::string, SvEndpoint>  svEndpoints_;  // key: ied|ld|cb
+    std::unordered_map<std::string, MmsEndpoint> mmsEndpoints_; // key: ied|ap
+
+    // NEW: datasets & mapping FCDA
+    std::unordered_map<DatasetKey, const DataSet*, DatasetKeyHash> datasets_;
+    std::unordered_multimap<std::string, DatasetKey> fcdaToDatasets_;
 
     // Diagnostics
     std::vector<Diag> diags_;
 
+    // Observabilité
+    std::vector<ReloadCallback> reloadCbs_;
 };
 
 } // namespace scl
