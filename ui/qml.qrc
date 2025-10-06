@@ -11,19 +11,16 @@
         <file>qml/components/SldLabelsOverlay.qml</file>
         <file>qml/components/IedCard.qml</file>
         <file>qml/styles/Theme.qml</file>
-        <file>icons/equipment/busbar.svg</file>
-        <file>icons/equipment/transformer_2w.svg</file>
-        <file>icons/equipment/bay.svg</file>
-        <file>icons/equipment/cbr_closed.svg</file>
-        <file>icons/equipment/cbr_intermediate.svg</file>
-        <file>icons/equipment/cbr_opened.svg</file>
-        <file>icons/equipment/ds_closed.svg</file>
-        <file>icons/equipment/ds_opened.svg</file>
-        <file>icons/equipment/label.svg</file>
-        <file>icons/equipment/unknown.svg</file>
         <file>qml/components/SegmentedTabs.qml</file>
         <file>qml/styles/ThemeSettings.qml</file>
         <file>common/Toast.qml</file>
         <file>qml/components/SclOpenDialog.qml</file>
+        <file>icons/equipment/cbr_opened.svg</file>
+        <file>icons/equipment/ct.svg</file>
+        <file>icons/equipment/ds_opened.svg</file>
+        <file>icons/equipment/line.svg</file>
+        <file>icons/equipment/transformer_2w.svg</file>
+        <file>icons/equipment/unknown.svg</file>
+        <file>icons/equipment/vt.svg</file>
     </qresource>
 </RCC>

@@ -14,6 +14,7 @@ ApplicationWindow {
   title: "StationViz — FAT IEC 61850"
   Theme { id: theme }
   color : theme.window
+  font.pixelSize: 16
 
   menuBar: MenuBar {
     Menu {

@@ -42,6 +42,7 @@ Page {
           anchors.fill: parent
           nodes: App.nodes
           edges: App.edges
+          iconsEnabled: true
 
           edgeColor: theme._L_edge
           nodeColor: theme._L_node

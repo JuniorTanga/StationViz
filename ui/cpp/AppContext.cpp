@@ -425,38 +425,43 @@ void AppContext::fillModelsFromPlanJson() {
     }
 
 
+    // utilitaire pour un libellé "propre"
+    auto prettyFromId = [](const QString& id)->QString {
+        QString s = id;
+        if (s.startsWith("CE:")) s = s.mid(3);
+        int p = s.lastIndexOf('/');
+        if (p >= 0 && p+1 < s.size()) s = s.mid(p+1);
+        return s;
+    };
+
     auto ensureNode = [&](const QString& id,
-                          const QString& kind,
-                          const QString& lab,
+                          const QString& kind,      // "Bus" ou "Equipment" lors de l'appel
+                          const QString& lbl,       // label explicite
                           double x, double y)
     {
         if (!pos.contains(id)) {
             pos.insert(id, QPointF(x,y));
-            label.insert(id, lab.isEmpty()? id : lab);
+
+            // label prioritaire: lbl -> prettyLabelById -> prettyFromId
+            const QString nice = !lbl.isEmpty()
+                                     ? lbl
+                                     : (prettyLabelById.contains(id) ? prettyLabelById.value(id)
+                                                                     : prettyFromId(id));
+            label.insert(id, nice);
+
             NodeModel::Node n;
-            n.id = id;
-            n.kind = kind;
-            //n.label = label.value(id);
-
-            auto prettyFromId = [](const QString& id)->QString {
-                QString s = id;
-                if (s.startsWith("CE:")) s = s.mid(3);
-                int p = s.lastIndexOf('/');
-                if (p >= 0 && p+1 < s.size()) s = s.mid(p+1);
-                return s;
-            };
-            const QString resolvedLabel =
-                prettyLabelById.value(id,
-                                      (label.isEmpty() ? prettyFromId(id) : label.value(id)));
-            n.label = resolvedLabel;
-
-
-            n.x = x;
-            n.y = y;
+            n.id    = id;
+            // CLÉ D’ICÔNE : si eKind est dispo dans kindById (CB/DS/CT/VT/Transformer...) on le prend,
+            // sinon on garde 'kind' ("Bus" / "Equipment")
+            n.kind  = kindById.contains(id) ? kindById.value(id) : kind;
+            n.label = nice;
+            n.x     = x;
+            n.y     = y;
             n.state = "normal";
             nodeModel_->appendNoSignal(n);
         }
     };
+
     auto ensureBus = [&](const QString& busId, const QString& busLabel, double x, double y){
         ensureNode(busId, "Bus", busLabel, x, y);
     };
@@ -464,8 +469,6 @@ void AppContext::fillModelsFromPlanJson() {
         EdgeModel::Edge e; e.fromId=a; e.toId=b; e.kind=kind;
         edgeModel_->appendNoSignal(e);
     };
-
-
 
     // ---- Index buses -> (ss, vl, label) et groupes ss:vl ----
     struct BusInfo { QString ss; QString vl; QString label; };

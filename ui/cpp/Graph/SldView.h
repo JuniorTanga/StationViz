@@ -8,28 +8,33 @@ class EdgeModel;
 
 class SldView : public QQuickItem {
     Q_OBJECT
-    Q_PROPERTY(bool iconsEnabled READ iconsEnabled WRITE setIconsEnabled NOTIFY iconsEnabledChanged)
-    Q_PROPERTY(qreal zoom READ zoom WRITE setZoom NOTIFY zoomChanged)
-    Q_PROPERTY(qreal panX READ panX WRITE setPanX NOTIFY panChanged)
-    Q_PROPERTY(qreal panY READ panY WRITE setPanY NOTIFY panChanged)
-    Q_PROPERTY(NodeModel* nodes READ nodes WRITE setNodes NOTIFY nodesChanged)
-    Q_PROPERTY(EdgeModel* edges READ edges WRITE setEdges NOTIFY edgesChanged)
-    Q_PROPERTY(QString selectionId READ selectionId WRITE setSelectionId NOTIFY selectionChanged)
-    Q_PROPERTY(QColor edgeColor READ edgeColor WRITE setEdgeColor NOTIFY colorsChanged)
-    Q_PROPERTY(QColor nodeColor READ nodeColor WRITE setNodeColor NOTIFY colorsChanged)
-    Q_PROPERTY(QColor selectionColor READ selectionColor WRITE setSelectionColor NOTIFY colorsChanged)
+    Q_PROPERTY(bool  iconsEnabled    READ iconsEnabled    WRITE setIconsEnabled    NOTIFY iconsEnabledChanged)
+    Q_PROPERTY(qreal zoom            READ zoom            WRITE setZoom            NOTIFY zoomChanged)
+    Q_PROPERTY(qreal panX            READ panX            WRITE setPanX            NOTIFY panChanged)
+    Q_PROPERTY(qreal panY            READ panY            WRITE setPanY            NOTIFY panChanged)
+    Q_PROPERTY(NodeModel* nodes      READ nodes           WRITE setNodes           NOTIFY nodesChanged)
+    Q_PROPERTY(EdgeModel* edges      READ edges           WRITE setEdges           NOTIFY edgesChanged)
+    Q_PROPERTY(QString selectionId   READ selectionId     WRITE setSelectionId     NOTIFY selectionChanged)
+    Q_PROPERTY(QColor edgeColor      READ edgeColor       WRITE setEdgeColor       NOTIFY colorsChanged)
+    Q_PROPERTY(QColor nodeColor      READ nodeColor       WRITE setNodeColor       NOTIFY colorsChanged)
+    Q_PROPERTY(QColor selectionColor READ selectionColor  WRITE setSelectionColor  NOTIFY colorsChanged)
+
+    Q_PROPERTY(float iconWorldWidth  READ iconWorldWidth  WRITE setIconWorldWidth  NOTIFY iconsParamsChanged)
+    Q_PROPERTY(float iconWorldHeight READ iconWorldHeight WRITE setIconWorldHeight NOTIFY iconsParamsChanged)
+    Q_PROPERTY(float iconZoomThreshold READ iconZoomThreshold WRITE setIconZoomThreshold NOTIFY iconsParamsChanged)
+
 
 public:
     SldView();
 
-    qreal zoom() const { return zoom_; }
-    void setZoom(qreal z);
+    qreal zoom()  const { return zoom_;  }
+    void  setZoom(qreal z);
 
-    qreal panX() const { return panX_; }
-    void setPanX(qreal v);
+    qreal panX()  const { return panX_;  }
+    void  setPanX(qreal v);
 
-    qreal panY() const { return panY_; }
-    void setPanY(qreal v);
+    qreal panY()  const { return panY_;  }
+    void  setPanY(qreal v);
 
     NodeModel* nodes() const { return nodes_; }
     void setNodes(NodeModel* m);
@@ -39,11 +44,8 @@ public:
 
     QString selectionId() const { return selectionId_; }
     void setSelectionId(const QString &id) {
-        if (selectionId_ == id)
-            return;
-        selectionId_ = id;
-        update();
-        emit selectionChanged();
+        if (selectionId_ == id) return;
+        selectionId_ = id; update(); emit selectionChanged();
     }
 
     QColor edgeColor() const { return edgeColor_; }
@@ -61,6 +63,16 @@ public:
     Q_INVOKABLE void fitToContent();
     Q_INVOKABLE void centerOn(const QString& nodeId);
 
+    // --- dans la section public: (getters/setters)
+    float iconWorldWidth()  const { return iconWorldWidth_; }
+    float iconWorldHeight() const { return iconWorldHeight_; }
+    float iconZoomThreshold() const { return iconZoomThreshold_; }
+
+    void setIconWorldWidth(float v)  { if (iconWorldWidth_ != v)  { iconWorldWidth_ = v;  Q_EMIT iconsParamsChanged(); update(); } }
+    void setIconWorldHeight(float v) { if (iconWorldHeight_ != v) { iconWorldHeight_ = v; Q_EMIT iconsParamsChanged(); update(); } }
+    void setIconZoomThreshold(float v){ if (iconZoomThreshold_ != v){ iconZoomThreshold_ = v; Q_EMIT iconsParamsChanged(); update(); } }
+
+
 signals:
     void zoomChanged();
     void panChanged();
@@ -70,6 +82,9 @@ signals:
     void selectionChanged();
     void colorsChanged();
     void iconsEnabledChanged();
+    // --- dans signals:
+    Q_SIGNAL void iconsParamsChanged();
+
 
 protected:
     QSGNode* updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData*) override;
@@ -84,11 +99,11 @@ private:
     QString selectionId_;
     QColor edgeColor_{QColor("#9E9E9E")};
     QColor nodeColor_{QColor("#263238")};
-    QColor selectionColor_{QColor("#2E7D32")}; // vert
+    QColor selectionColor_{QColor("#2E7D32")};
 
     qreal zoom_{1.0};
     qreal panX_{0.0}, panY_{0.0};
-    qreal iconZoomThreshold_{0.7};
+    qreal iconZoomThreshold_{0.55f};       // visible plus tôt
     QPointer<NodeModel> nodes_;
     QPointer<EdgeModel> edges_;
 
@@ -98,14 +113,11 @@ private:
     SldIconAtlas atlas_;
     bool atlasBuilt_{false};
     void ensureAtlas_();
-    QHash<QString, QString> iconMap_; // kind -> qrc path
+    QHash<QString, QString> iconMap_; // kind -> :/icons/equipment/...
+    bool iconsEnabled_{true};         // activé par défaut
+    // --- dans private:
+    float iconWorldWidth_{28.f};   // ← taille “monde” (augmenter pour agrandir)
+    float iconWorldHeight_{28.f};
+    //float iconZoomThreshold_{0.55f}; // seuil d’apparition des icônes
 
-    QSGTransformNode* rootNode_{nullptr};
-    QSGGeometryNode*  busNode_{nullptr};   // triangles (bus épais)
-    QSGGeometryNode*  edgeNode_{nullptr};  // lignes orthogonales
-    QSGGeometryNode*  nodeNode_{nullptr};  // rectangles filaires
-    QSGGeometryNode*  selNode_{nullptr};   // cadre sélection
-    QSGGeometryNode*  iconNode_{nullptr};  // triangles texturés (désactivé par défaut)
-
-    bool iconsEnabled_{false};
 };

@@ -1,4 +1,3 @@
-
 #include <QSGGeometryNode>
 #include <QMatrix4x4>
 #include <QSGFlatColorMaterial>
@@ -13,13 +12,19 @@
 #include "../Models/EdgeModel.h"
 #include "SldView.h"
 
-
 SldView::SldView() {
     setFlag(QQuickItem::ItemHasContents, true);
     setAcceptedMouseButtons(Qt::AllButtons);
     setAcceptHoverEvents(true);
-    //iconMap_.insert("Bus", "qrc:/icons/equipment/busbar.svg");
-    //iconMap_.insert("Transformer", "qrc:/icons/equipment/transformer_2w.svg");
+
+    iconMap_.insert("CB",          ":/icons/equipment/cbr_opened.svg");
+    iconMap_.insert("DS",          ":/icons/equipment/ds_opened.svg");
+    iconMap_.insert("CT",          ":/icons/equipment/ct.svg");
+    iconMap_.insert("VT",          ":/icons/equipment/vt.svg");
+    iconMap_.insert("Transformer", ":/icons/equipment/transformer_2w.svg");
+    iconMap_.insert("Unknown",     ":/icons/equipment/unknown.svg");
+    // On n’affiche pas d’icône pour la barre (bus dessiné en épais)
+    // iconMap_.insert("Bus", ":/icons/equipment/busbar.svg");
 }
 
 void SldView::ensureAtlas_() {
@@ -27,7 +32,7 @@ void SldView::ensureAtlas_() {
     QMap<QString, QString> res;
     for (auto it = iconMap_.cbegin(); it != iconMap_.cend(); ++it)
         res.insert(it.key(), it.value());
-    atlas_.build(res, 48, 2);
+    atlas_.build(res, 96, 2);   // 96px/sprite pour netteté au zoom
     atlasBuilt_ = true;
 }
 
@@ -38,20 +43,13 @@ void SldView::setPanY(qreal v){ if (qFuzzyCompare(panY_,v)) return; panY_=v; emi
 void SldView::setNodes(NodeModel* m){ if (nodes_==m) return; nodes_=m; emit nodesChanged(); update(); }
 void SldView::setEdges(EdgeModel* m){ if (edges_==m) return; edges_=m; emit edgesChanged(); update(); }
 
-
-
 QRectF SldView::computeContentBBox() const {
     if (!nodes_) return {};
-    QRectF bbox;
-    bool first=true;
+    QRectF bbox; bool first=true;
     for (const auto& n : nodes_->items()){
         QRectF r(n.x-8, n.y-8, 16, 16);
         if (first){ bbox = r; first=false; }
         else bbox = bbox.united(r);
-    }
-    for (const auto& e : edges_->items()){
-        // rien à ajouter (nœuds suffisent pour bbox)
-        (void)e;
     }
     return bbox;
 }
@@ -64,7 +62,6 @@ void SldView::fitToContent() {
     const qreal zx = (w * 0.9) / bb.width();
     const qreal zy = (h * 0.9) / bb.height();
     setZoom(qMin(zx, zy));
-    // centre
     setPanX(-(bb.center().x()*zoom_) + w/2.0);
     setPanY(-(bb.center().y()*zoom_) + h/2.0);
 }
@@ -81,10 +78,9 @@ void SldView::centerOn(const QString& nodeId){
     }
 }
 
-
 QSGNode* SldView::updatePaintNode(QSGNode* old, UpdatePaintNodeData*)
 {
-    // ---------- Root + transform (pan/zoom) ----------
+    // Root + transform (pan/zoom)
     QSGTransformNode* root = dynamic_cast<QSGTransformNode*>(old);
     if (!root) root = new QSGTransformNode;
 
@@ -93,13 +89,7 @@ QSGNode* SldView::updatePaintNode(QSGNode* old, UpdatePaintNodeData*)
     m.scale(zoom_);
     root->setMatrix(m);
 
-    // IMPORTANT : repartir d'un arbre propre pour garantir l'ordre des layers
-    // auto clearChildren = [](QSGNode* n){
-    //     while (QSGNode* c = n->firstChild()) { n->removeChildNode(c); delete c; }
-    // };
-    // clearChildren(root);
-
-    // ---------- Helpers: alloc géom ----------
+    // Helpers: allocation géométrie
     auto ensureLinesGeom = [](QSGNode* parent, int idx)->QSGGeometryNode*{
         QSGGeometryNode* n = nullptr;
         if (parent->childCount() > idx) n = static_cast<QSGGeometryNode*>(parent->childAtIndex(idx));
@@ -138,38 +128,6 @@ QSGNode* SldView::updatePaintNode(QSGNode* old, UpdatePaintNodeData*)
         return n;
     };
 
-    auto ensureTexturedTriangles = [&](QSGNode* parent, int idx, QSGTexture* texture)->QSGGeometryNode* {
-        QSGGeometryNode* n = nullptr;
-        if (parent->childCount() > idx) n = static_cast<QSGGeometryNode*>(parent->childAtIndex(idx));
-        else { n = new QSGGeometryNode(); parent->appendChildNode(n); }
-
-        QSGGeometry* g = n->geometry();
-        if (!g) {
-            g = new QSGGeometry(QSGGeometry::defaultAttributes_TexturedPoint2D(), 0);
-            g->setDrawingMode(QSGGeometry::DrawTriangles);
-            n->setGeometry(g);
-            n->setFlag(QSGNode::OwnsGeometry, true);
-        } else {
-            g->setDrawingMode(QSGGeometry::DrawTriangles);
-        }
-
-        // si matériel existant non texturé → on le remplace proprement
-        if (auto* oldMat = n->material()) {
-            if (dynamic_cast<QSGTextureMaterial*>(oldMat) == nullptr) {
-                n->setMaterial(nullptr);
-                delete oldMat;
-            }
-        }
-        if (!n->material()) {
-            auto* mat = new QSGTextureMaterial();
-            n->setMaterial(mat);
-            n->setFlag(QSGNode::OwnsMaterial, true);
-        }
-        if (auto* mat = static_cast<QSGTextureMaterial*>(n->material()))
-            mat->setTexture(texture);
-        return n;
-    };
-
     auto pushSeg = [](QVector<QPointF>& buf, const QPointF& a, const QPointF& b){
         buf.push_back(a); buf.push_back(b);
     };
@@ -204,14 +162,13 @@ QSGNode* SldView::updatePaintNode(QSGNode* old, UpdatePaintNodeData*)
             const QPointF src = busToEquip ? a : b;
             const QPointF dst = busToEquip ? b : a;
             const float dy = float(dst.y() - src.y());
-            const float jog = std::clamp(dy * 0.5f, 32.0f, 140.0f); // profondeur du coude
+            const float jog = std::clamp(dy * 0.5f, 32.0f, 140.0f);
             const float ytap = float(src.y()) + jog;
             if (busToEquip) { P << a << QPointF(a.x(), ytap) << QPointF(b.x(), ytap) << b; }
             else            { P << b << QPointF(b.x(), ytap) << QPointF(a.x(), ytap) << a; }
             return P;
         }
 
-        // défaut : L simple
         P << a << QPointF(a.x(), b.y()) << b;
         return P;
     };
@@ -228,7 +185,7 @@ QSGNode* SldView::updatePaintNode(QSGNode* old, UpdatePaintNodeData*)
         }
     }
 
-    // ---------- 0) BUS épais (triangles) ----------
+    // 0) BUS épais (triangles)
     {
         const float busPx = 3.0f;
         auto* g = ensureTrianglesGeom(root, 0);
@@ -251,7 +208,7 @@ QSGNode* SldView::updatePaintNode(QSGNode* old, UpdatePaintNodeData*)
         g->markDirty(QSGNode::DirtyGeometry | QSGNode::DirtyMaterial);
     }
 
-    // ---------- 1) Arêtes orthogonales (hors BusSpan) ----------
+    // 1) Arêtes orthogonales (hors BusSpan)
     {
         auto* g = ensureLinesGeom(root, 1);
         QVector<QPointF> segs;
@@ -277,7 +234,7 @@ QSGNode* SldView::updatePaintNode(QSGNode* old, UpdatePaintNodeData*)
         g->markDirty(QSGNode::DirtyGeometry | QSGNode::DirtyMaterial);
     }
 
-    // ---------- 2) Nœuds (rectangles filaires) ----------
+    // 2) Nœuds (rectangles filaires)
     {
         auto* g = ensureLinesGeom(root, 2);
         auto* geom = g->geometry();
@@ -300,7 +257,7 @@ QSGNode* SldView::updatePaintNode(QSGNode* old, UpdatePaintNodeData*)
         g->markDirty(QSGNode::DirtyGeometry | QSGNode::DirtyMaterial);
     }
 
-    // ---------- 3) Sélection ----------
+    // 3) Sélection
     {
         auto* g = ensureLinesGeom(root, 3);
         auto* geom = g->geometry();
@@ -326,39 +283,78 @@ QSGNode* SldView::updatePaintNode(QSGNode* old, UpdatePaintNodeData*)
         g->markDirty(QSGNode::DirtyGeometry | QSGNode::DirtyMaterial);
     }
 
-    // ---------- 4) Icônes batchées (sécurisé) ----------
+    // 4) Icônes batchées (préserve le ratio)
     {
         ensureAtlas_();
-        QSGTexture* tex = atlas_.textureFor(window());
-        auto* g = ensureTexturedTriangles(root, 4, tex);
-
-        if (!tex || zoom_ < iconZoomThreshold_ || !nodes_) {
+        if (!iconsEnabled_ || zoom_ < iconZoomThreshold_ || !nodes_) {
+            // on s’assure tout de même d’avoir un node pour garder l’ordre des layers
+            QSGGeometryNode* g = (root->childCount() > 4)
+                                     ? static_cast<QSGGeometryNode*>(root->childAtIndex(4))
+                                     : nullptr;
+            if (!g) {
+                g = new QSGGeometryNode();
+                root->appendChildNode(g);
+                auto* geom = new QSGGeometry(QSGGeometry::defaultAttributes_TexturedPoint2D(), 0);
+                geom->setDrawingMode(QSGGeometry::DrawTriangles);
+                g->setGeometry(geom);
+                g->setFlag(QSGNode::OwnsGeometry, true);
+                auto* mat = new QSGTextureMaterial();
+                g->setMaterial(mat);
+                g->setFlag(QSGNode::OwnsMaterial, true);
+            }
             g->geometry()->allocate(0);
-            g->markDirty(QSGNode::DirtyGeometry | QSGNode::DirtyMaterial);
+            g->markDirty(QSGNode::DirtyGeometry);
         } else {
-            int iconCount = 0;
-            for (const auto& n : nodes_->items())
-                if (iconMap_.contains(n.kind)) ++iconCount;
-
-            const int vcount = iconCount * 6; // 2 triangles / icône
+            QSGTexture* tex = atlas_.textureFor(window());
+            QSGGeometryNode* g = (root->childCount() > 4)
+                                     ? static_cast<QSGGeometryNode*>(root->childAtIndex(4))
+                                     : nullptr;
+            if (!g) {
+                g = new QSGGeometryNode();
+                root->appendChildNode(g);
+                auto* geom = new QSGGeometry(QSGGeometry::defaultAttributes_TexturedPoint2D(), 0);
+                geom->setDrawingMode(QSGGeometry::DrawTriangles);
+                g->setGeometry(geom);
+                g->setFlag(QSGNode::OwnsGeometry, true);
+                auto* mat = new QSGTextureMaterial();
+                g->setMaterial(mat);
+                g->setFlag(QSGNode::OwnsMaterial, true);
+            }
             auto* geom = g->geometry();
-            geom->allocate(vcount);
-            auto* verts = reinterpret_cast<QSGGeometry::TexturedPoint2D*>(geom->vertexData());
 
+            // Compte les icônes affichables
+            int iconCount = 0;
+            for (const auto& n : nodes_->items()) {
+                if (iconMap_.contains(n.kind) && !atlas_.entry(n.kind).uv.isNull())
+                    ++iconCount;
+            }
+            geom->allocate(iconCount * 6);
+
+            auto* mat = static_cast<QSGTextureMaterial*>(g->material());
+            mat->setTexture(tex);
+
+            auto* verts = reinterpret_cast<QSGGeometry::TexturedPoint2D*>(geom->vertexData());
             int k = 0;
-            const float w = 20.f, h = 20.f;
+
+            const float iconH = 46.f; // hauteur "monde" (la largeur suit l’aspect)
 
             for (const auto& n : nodes_->items()) {
                 if (!iconMap_.contains(n.kind)) continue;
                 const auto e = atlas_.entry(n.kind);
                 if (e.uv.isNull()) continue;
 
-                const float x = float(n.x), y = float(n.y);
-                const float x0 = x - w/2, x1 = x + w/2;
-                const float y0 = y - h/2, y1 = y + h/2;
+                const float aspect = (e.aspect > 0.f ? e.aspect : 1.f);
+                const float w = iconH * aspect;
 
-                const float u0 = e.uv.left(),  v0 = e.uv.top();
-                const float u1 = e.uv.right(), v1 = e.uv.bottom();
+                const float x = static_cast<float>(n.x);
+                const float y = static_cast<float>(n.y);
+                const float x0 = x - w * 0.5f, x1 = x + w * 0.5f;
+                const float y0 = y - iconH * 0.5f, y1 = y + iconH * 0.5f;
+
+                const float u0 = e.uv.left();
+                const float v0 = e.uv.top();
+                const float u1 = e.uv.right();
+                const float v1 = e.uv.bottom();
 
                 verts[k++].set(x0, y0, u0, v0);
                 verts[k++].set(x1, y0, u1, v0);
@@ -368,7 +364,6 @@ QSGNode* SldView::updatePaintNode(QSGNode* old, UpdatePaintNodeData*)
                 verts[k++].set(x1, y1, u1, v1);
                 verts[k++].set(x0, y1, u0, v1);
             }
-
             g->markDirty(QSGNode::DirtyGeometry | QSGNode::DirtyMaterial);
         }
     }
@@ -377,12 +372,10 @@ QSGNode* SldView::updatePaintNode(QSGNode* old, UpdatePaintNodeData*)
 }
 
 void SldView::wheelEvent(QWheelEvent* ev) {
-    // zoom autour du curseur
     const QPointF p = ev->position();
     const qreal oldZ = zoom_;
     const qreal factor = ev->angleDelta().y() > 0 ? 1.1 : 0.9;
     setZoom(zoom_ * factor);
-    // ajuster pan pour zoom sur le pointeur
     const qreal sx = (p.x() - panX_) / oldZ;
     const qreal sy = (p.y() - panY_) / oldZ;
     setPanX(p.x() - sx*zoom_);
@@ -392,7 +385,6 @@ void SldView::wheelEvent(QWheelEvent* ev) {
 
 void SldView::mousePressEvent(QMouseEvent* ev) {
     if (ev->button() == Qt::LeftButton) {
-        // hit test
         const QPointF pView = ev->position();
         const QPointF pWorld = QPointF((pView.x()-panX_)/zoom_, (pView.y()-panY_)/zoom_);
         const QString id = hitTestNodeId(pWorld);

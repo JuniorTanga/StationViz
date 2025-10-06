@@ -1,1 +1,38 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24"><rect x="5" y="5" width="14" height="14" fill="none" stroke="#222" stroke-width="2"/><line x1="8" y1="8" x2="16" y2="16" stroke="#222" stroke-width="2"/></svg>
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<!-- Created with Inkscape (http://www.inkscape.org/) -->
+
+<svg
+   width="13.508868mm"
+   height="13.508867mm"
+   viewBox="0 0 13.508868 13.508867"
+   version="1.1"
+   id="svg1"
+   xmlns="http://www.w3.org/2000/svg"
+   xmlns:svg="http://www.w3.org/2000/svg">
+  <defs
+     id="defs1" />
+  <rect
+     style="fill:none;stroke:none;stroke-width:3.77516"
+     id="rect1"
+     width="13.508867"
+     height="13.508867"
+     x="2.4017622e-06"
+     y="1.987509e-07" />
+  <g
+     id="layer1"
+     transform="translate(-126.18418,-38.87215)">
+    <g
+       id="g134"
+       style="display:inline"
+       transform="translate(-104.21794,18.989377)">
+      <path
+         style="fill:none;stroke:#000000;stroke-width:0.444;stroke-dasharray:none"
+         d="M 237.15655,19.882774 V 25.52"
+         id="path133" />
+      <path
+         style="fill:none;stroke:#000000;stroke-width:0.444;stroke-dasharray:none"
+         d="m 234.08,25.63 3.19,3.189999 V 33.66"
+         id="path134" />
+    </g>
+  </g>
+</svg>

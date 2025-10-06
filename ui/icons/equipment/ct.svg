@@ -1,0 +1,71 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<!-- Created with Inkscape (http://www.inkscape.org/) -->
+
+<svg
+   width="5.1669092mm"
+   height="8.7644033mm"
+   viewBox="0 0 5.1669092 8.7644033"
+   version="1.1"
+   id="svg1"
+   xmlns="http://www.w3.org/2000/svg"
+   xmlns:svg="http://www.w3.org/2000/svg">
+  <defs
+     id="defs1" />
+  <g
+     id="layer1"
+     transform="translate(-106.49351,-138.88965)">
+    <g
+       id="g11"
+       transform="translate(-18.64066,70.609956)"
+       style="stroke-width:0.5;stroke-dasharray:none">
+      <circle
+         style="fill:none;stroke:#000000;stroke-width:0.5;stroke-dasharray:none"
+         id="path10"
+         cx="127.71762"
+         cy="72.648148"
+         r="2.3334522" />
+      <path
+         style="fill:none;stroke:#000000;stroke-width:0.499999;stroke-dasharray:none"
+         d="m 127.71762,68.279694 v 8.764403"
+         id="path11" />
+    </g>
+    <g
+       id="g27"
+       transform="translate(-8.0710395,15.585258)">
+      <path
+         style="fill:none;stroke:#000000;stroke-width:0.499999;stroke-dasharray:none"
+         d="m 117.148,135.07377 h 9.09177"
+         id="path27" />
+      <g
+         id="g30"
+         transform="translate(-2.6346605,-0.00843832)">
+        <g
+           id="g29"
+           transform="rotate(-90,133.51353,135.43965)">
+          <circle
+             style="fill:none;stroke:#000000;stroke-width:0.499999;stroke-dasharray:none"
+             id="path28"
+             cx="133.87097"
+             cy="132.97844"
+             r="2.1778889" />
+          <circle
+             style="fill:none;stroke:#000000;stroke-width:0.499999;stroke-dasharray:none"
+             id="circle28"
+             cx="136.27728"
+             cy="135.70087"
+             r="2.1778889" />
+          <circle
+             style="fill:none;stroke:#000000;stroke-width:0.499999;stroke-dasharray:none"
+             id="circle29"
+             cx="131.51978"
+             cy="135.70087"
+             r="2.1778889" />
+        </g>
+        <path
+           style="fill:none;stroke:#000000;stroke-width:0.499999;stroke-dasharray:none"
+           d="M 128.87443,135.08221 H 126.555"
+           id="path29" />
+      </g>
+    </g>
+  </g>
+</svg>
