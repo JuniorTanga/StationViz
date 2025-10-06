@@ -2,37 +2,49 @@
 <!-- Created with Inkscape (http://www.inkscape.org/) -->
 
 <svg
-   width="13.508868mm"
-   height="13.508867mm"
-   viewBox="0 0 13.508868 13.508867"
+   width="6.7809978mm"
+   height="20.041916mm"
+   viewBox="0 0 6.7809978 20.041916"
    version="1.1"
    id="svg1"
+   sodipodi:docname="ds_opened.svg"
+   inkscape:version="1.4.2 (f4327f4, 2025-05-13)"
+   xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
+   xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
    xmlns="http://www.w3.org/2000/svg"
    xmlns:svg="http://www.w3.org/2000/svg">
+  <sodipodi:namedview
+     id="namedview1"
+     pagecolor="#ffffff"
+     bordercolor="#000000"
+     borderopacity="0.25"
+     inkscape:showpageshadow="2"
+     inkscape:pageopacity="0.0"
+     inkscape:pagecheckerboard="0"
+     inkscape:deskcolor="#d1d1d1"
+     inkscape:document-units="mm"
+     inkscape:zoom="4.4555059"
+     inkscape:cx="-10.212084"
+     inkscape:cy="56.671454"
+     inkscape:window-width="1600"
+     inkscape:window-height="877"
+     inkscape:window-x="-8"
+     inkscape:window-y="-8"
+     inkscape:window-maximized="1"
+     inkscape:current-layer="svg1" />
   <defs
      id="defs1" />
-  <rect
-     style="fill:none;stroke:none;stroke-width:3.77516"
-     id="rect1"
-     width="13.508867"
-     height="13.508867"
-     x="2.4017622e-06"
-     y="1.987509e-07" />
   <g
-     id="layer1"
-     transform="translate(-126.18418,-38.87215)">
-    <g
-       id="g134"
-       style="display:inline"
-       transform="translate(-104.21794,18.989377)">
-      <path
-         style="fill:none;stroke:#000000;stroke-width:0.444;stroke-dasharray:none"
-         d="M 237.15655,19.882774 V 25.52"
-         id="path133" />
-      <path
-         style="fill:none;stroke:#000000;stroke-width:0.444;stroke-dasharray:none"
-         d="m 234.08,25.63 3.19,3.189999 V 33.66"
-         id="path134" />
-    </g>
+     id="g2"
+     transform="translate(0.46772284)">
+    <path
+       style="fill:none;stroke:#000000;stroke-width:1.32292"
+       d="M 3.0879396,0 V 7.8979995"
+       id="path1" />
+    <path
+       style="fill:none;stroke:#000000;stroke-width:1.32292"
+       d="M 3.0879396,20.041916 V 11.371932 L 0,8.2839924"
+       id="path2"
+       sodipodi:nodetypes="cc" />
   </g>
 </svg>

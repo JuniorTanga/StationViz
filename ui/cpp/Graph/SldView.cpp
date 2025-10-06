@@ -169,6 +169,12 @@ QSGNode* SldView::updatePaintNode(QSGNode* old, UpdatePaintNodeData*)
             return P;
         }
 
+        if (edgeKind == "FeederBranch") {
+            // depuis CT (vertical) vers VT (à droite) : petit L propre
+            P << a << QPointF(b.x(), a.y()) << b;
+            return P;
+        }
+
         P << a << QPointF(a.x(), b.y()) << b;
         return P;
     };

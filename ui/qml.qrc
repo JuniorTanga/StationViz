@@ -22,5 +22,6 @@
         <file>icons/equipment/transformer_2w.svg</file>
         <file>icons/equipment/unknown.svg</file>
         <file>icons/equipment/vt.svg</file>
+        <file>qml/pages/InventoryPage.qml</file>
     </qresource>
 </RCC>

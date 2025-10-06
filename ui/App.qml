@@ -2,7 +2,7 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 import QtQuick.Dialogs
-import StationViz // module où AppContext est enregistré
+import StationViz           // AppContext / App (C++)
 import "qml/pages"
 import "qml/components"
 import "qml/styles"
@@ -10,17 +10,20 @@ import "./common"
 
 ApplicationWindow {
   id: win
-  width: 1280; height: 800; visible: true
+  width: 1280
+  height: 800
+  visible: true
   title: "StationViz — FAT IEC 61850"
+
   Theme { id: theme }
-  color : theme.window
+  color: theme.window
   font.pixelSize: 16
 
+  // ─────────────────────────── MENUS ───────────────────────────
   menuBar: MenuBar {
     Menu {
       title: "Fichier"
       MenuItem { text: "Ouvrir…"; onTriggered: openSclDlg.open() }
-      //MenuItem { text: "Ouvrir SCL…"; onTriggered: fileDialog.open() }
       MenuItem { text: "Effacer"; onTriggered: App.clear() }
       MenuSeparator {}
       MenuItem { text: "Quitter"; onTriggered: Qt.quit() }
@@ -28,111 +31,96 @@ ApplicationWindow {
     Menu {
       title: "Vue"
       MenuItem { text: "Schéma unifilaire"; onTriggered: App.setViewMode("sld") }
-      MenuItem { text: "IEDs"; onTriggered: App.setViewMode("ieds") }
-      MenuItem { text: "Communication"; onTriggered: App.setViewMode("comms") }
+      MenuItem { text: "IEDs";               onTriggered: App.setViewMode("ieds") }
+      MenuItem { text: "Inventaire";         onTriggered: App.setViewMode("inventory") }
+      MenuItem { text: "Communication";      onTriggered: App.setViewMode("comm") }
       MenuSeparator {}
       MenuItem {
         text: theme.darkMode ? "Mode clair" : "Mode sombre"
-        //onTriggered: theme.darkMode = !theme.darkMode
+        // onTriggered: theme.darkMode = !theme.darkMode
       }
     }
-
-
   }
 
+  // ───────────────────────── entête ────────────────────────────
   header: ToolBar {
     RowLayout {
-      anchors.fill: parent; spacing: 8
+      anchors.fill: parent
+      spacing: 8
       Label { text: App.uiStore.currentFile || "Aucun fichier" }
       Item { Layout.fillWidth: true }
       Button { text: "Ouvrir"; onClicked: fileDialog.open() }
     }
   }
-/*
-  StackLayout {
-    id: stack
-    anchors.fill: parent
-    currentIndex: App.uiStore.viewMode === "sld" ? 0 : (App.uiStore.viewMode === "ieds" ? 1 : 2)
 
-    // Page 0: SLD
-    Loader { source: "qml/pages/SldPage.qml" }
-
-    // Page 1: IEDs (placeholder)
-    //Item { Label { anchors.centerIn: parent; text: "Vue IEDs (à venir)" } }
-    Loader { source: "qml/pages/IedPage.qml" }
-
-    // Page 2: Communication (placeholder)
-    Item { Label { anchors.centerIn: parent; text: "Vue Communication (à venir)" } }
-  }
-*/
-
+  // ───────────────────────── contenu ───────────────────────────
   ColumnLayout {
-      anchors.fill: parent
-      spacing: 0
+    anchors.fill: parent
+    spacing: 0
 
-      // 1) barre d’onglets (switch de vue)
-      SegmentedTabs {
-        id: tabs
-        Layout.fillWidth: true
-        currentId: App.uiStore.viewMode
-        tabs: [
-          { id: "ieds", label: "IED"},
-          { id: "sld",  label: "SUBSTATION"},
-          { id: "comm", label: "COMMUNICATION"},
-          { id: "tests",label: "TESTS"} // engrenage simple
-        ]
-        onTabClicked: (id) => App.uiStore.viewMode = id
-      }
-
-      // 2) contenu des pages
-      StackLayout {
-        id: stack
-        Layout.fillWidth: true
-        Layout.fillHeight: true
-
-        // mapping viewMode -> index
-        currentIndex: {
-          switch (App.uiStore.viewMode) {
-          case "ieds":  return 0;
-          case "sld":   return 1;
-          case "comm":  return 2;
-          case "tests": return 3;
-          default:      return 1;
-          }
-        }
-
-        // IEDs par travée (nouvelle page que tu viens d’ajouter)
-        IedPage { }
-
-        // Unifilaire
-        SldPage { }
-
-        // Communication (placeholder pour l’instant)
-        Page {
-          Label { anchors.centerIn: parent; text: "Communication — à venir"; }
-        }
-
-        // Tests FAT (placeholder)
-        Page {
-          Label { anchors.centerIn: parent; text: "Tests — à venir"; }
-        }
-      }
+    SegmentedTabs {
+      id: tabs
+      Layout.fillWidth: true
+      currentId: App.uiStore.viewMode
+      tabs: [
+        { id: "ieds",      label: "IED" },
+        { id: "sld",       label: "SUBSTATION" },
+        { id: "inventory", label: "INVENTORY" },
+        { id: "comm",      label: "COMMUNICATION" },
+        { id: "tests",     label: "TESTS" }
+      ]
+      onTabClicked: (id) => App.uiStore.viewMode = id
     }
 
+    StackLayout {
+      id: stack
+      Layout.fillWidth: true
+      Layout.fillHeight: true
+
+      // mapping id -> index
+      currentIndex: {
+        switch (App.uiStore.viewMode) {
+        case "ieds":      return 0;
+        case "sld":       return 1;
+        case "inventory": return 2;
+        case "comm":      return 3;
+        case "tests":     return 4;
+        default:          return 1;
+        }
+      }
+
+      // 0 — Vue IED
+      IedPage { }
+
+      // 1 — Schéma unifilaire
+      SldPage { }
+
+      // 2 — Inventaire d’équipements (SS → VL → Bay)
+      InventoryPage { }
+
+      // 3 — Communication (placeholder)
+      Page { Label { anchors.centerIn: parent; text: "Communication — à venir" } }
+
+      // 4 — Tests FAT (placeholder)
+      Page { Label { anchors.centerIn: parent; text: "Tests — à venir" } }
+    }
+  }
+
+  // ───────────────────── boîtes d’ouverture ────────────────────
   FileDialog {
     id: fileDialog
     title: "Ouvrir un fichier SCL"
-    nameFilters: ["SCL files (*.scd *.cid *.icd *.ssd)", "All files (*)"]
+    nameFilters: [ "SCL files (*.scd *.cid *.icd *.ssd)", "All files (*)" ]
     onAccepted: App.openSclFile(selectedFile)
   }
 
   // Toast global
   Toast { id: toast }
 
-  // Dialog d’ouverture SCL
+  // Dialogue d’ouverture (drag&drop / bouton)
   SclOpenDialog {
     id: openSclDlg
-    visible: !App.hasScl && !App.busy  // s’affiche au démarrage si aucun fichier
+    visible: !App.hasScl && !App.busy
     onRequestOpenUrl: function(u) {
       busy = true
       App.loadSclAsync(u)
