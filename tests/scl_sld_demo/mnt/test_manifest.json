@@ -1,0 +1,79 @@
+{
+  "output_dir": "/mnt/data/test_out",
+  "dump_json_substations": true,
+  "dump_json_network": true,
+  "dump_json_ieds": true,
+  "dump_json_sld": true,
+  "tests": [
+    {
+      "id": "SB_2L",
+      "type": "ref",
+      "file": "/mnt/data/SCD_SB_2L.scd"
+    },
+    {
+      "id": "DB_COUPLER",
+      "type": "ref",
+      "file": "/mnt/data/SCD_DB_COUPLER.scd"
+    },
+    {
+      "id": "TR_2VL",
+      "type": "ref",
+      "file": "/mnt/data/SCD_2VL_TR.scd"
+    },
+    {
+      "id": "SB_2L_VAR",
+      "type": "variant",
+      "file": "/mnt/data/SCD_SB_2L_variant.scd"
+    },
+    {
+      "id": "DB_COUPLER_VAR",
+      "type": "variant",
+      "file": "/mnt/data/SCD_DB_COUPLER_variant.scd"
+    },
+    {
+      "id": "TR_2VL_VAR",
+      "type": "variant",
+      "file": "/mnt/data/SCD_2VL_TR_variant.scd"
+    },
+    {
+      "id": "NET_GOOD",
+      "type": "network",
+      "file": "/mnt/data/SCD_NET_GOOD.scd"
+    },
+    {
+      "id": "NET_MISSING_DATASET",
+      "type": "invalid",
+      "file": "/mnt/data/SCD_NET_MISSING_DATASET.scd"
+    },
+    {
+      "id": "NET_BAD_LD",
+      "type": "invalid",
+      "file": "/mnt/data/SCD_NET_BAD_LD.scd"
+    },
+    {
+      "id": "BROKEN_CN",
+      "type": "invalid",
+      "file": "/mnt/data/SCD_BROKEN_CN.scd"
+    },
+    {
+      "id": "DUP_IED",
+      "type": "invalid",
+      "file": "/mnt/data/SCD_DUP_IED_NAME.scd"
+    },
+    {
+      "id": "PRIVATE_HEAVY",
+      "type": "variant",
+      "file": "/mnt/data/SCD_PRIVATE_HEAVY.scd"
+    },
+    {
+      "id": "HEAVY_SMALL",
+      "type": "heavy",
+      "file": "/mnt/data/SCD_HEAVY_SMALL.scd"
+    },
+    {
+      "id": "HEAVY_LARGE",
+      "type": "heavy",
+      "file": "/mnt/data/SCD_HEAVY_LARGE.scd"
+    }
+  ]
+}

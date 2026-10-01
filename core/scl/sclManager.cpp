@@ -49,6 +49,142 @@ size_t SclManager::DatasetKeyHash::operator()(DatasetKey const& k) const noexcep
 
 SclManager::SclManager() = default;
 
+void SclManager::validate_() {
+    if (!model_) return;
+
+    // 1) Doublons d’IED
+    {
+        std::unordered_set<std::string> seen;
+        for (const auto& ied : model_->ieds) {
+            if (!seen.insert(ied.name).second) {
+                diags_.push_back({
+                    ErrorCode::DuplicateIEDName,
+                    "IED",
+                    "Nom d’IED en doublon: " + ied.name,
+                    "Assurez l’unicité de IED@name",
+                    Severity::Error
+                });
+            }
+        }
+    }
+
+    // 2) Terminal -> ConnectivityNode (référence cassée)
+    //    On vérifie uniquement les @connectivityNode explicites (forme canonique).
+    for (const auto& ss : model_->substations) {
+        for (const auto& vl : ss.vlevels) {
+            for (const auto& bay : vl.bays) {
+                for (const auto& ce : bay.equipments) {
+                    for (const auto& t : ce.terminals) {
+                        if (!t.connectivityNodeRef.empty()) {
+                            if (cnByPath_.find(t.connectivityNodeRef) == cnByPath_.end()) {
+                                diags_.push_back({
+                                    ErrorCode::BrokenConnectivityNode,
+                                    ss.name + "/" + vl.name + "/" + bay.name + "/" + ce.name,
+                                    "ConnectivityNode introuvable: " + t.connectivityNodeRef,
+                                    "Vérifiez le chemin @connectivityNode ou déclarez le CN",
+                                    Severity::Error
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // 3) GOOSE/SV -> DataSet: existence réelle du DataSet référencé
+    auto existsDataset = [&](const std::string& ied, const std::string& ld, const std::string& ds){
+        DatasetKey dk{ied, ld, ds};
+        return datasets_.find(dk) != datasets_.end();
+    };
+
+    // 3a) GSE
+    for (const auto& kv : gseEndpoints_) {
+        const auto& e = kv.second;
+        if (e.datasetRef.empty()) {
+            // (déjà un diag "Dataset introuvable..." posé dans buildIndexes_)
+            // on ajoute un code dédié pour mode strict
+            diags_.push_back({
+                ErrorCode::ControlBlockNotFound,
+                "LN0.GSEControl",
+                "Contrôle GOOSE introuvable ou sans DataSet: " + e.cbName,
+                "Vérifiez LN0/GSEControl@name et @datSet",
+                Severity::Error
+            });
+        } else if (!existsDataset(e.iedName, e.ldInst, e.datasetRef)) {
+            diags_.push_back({
+                ErrorCode::DatasetNotFound,
+                "LN0.DataSet",
+                "DataSet introuvable pour GSE: " + e.datasetRef,
+                "Déclarez le DataSet sous LN0 ou corrigez @datSet",
+                Severity::Error
+            });
+        }
+    }
+
+    // 3b) SV
+    for (const auto& kv : svEndpoints_) {
+        const auto& e = kv.second;
+        if (e.datasetRef.empty()) {
+            diags_.push_back({
+                ErrorCode::ControlBlockNotFound,
+                "LN0.SampledValueControl",
+                "Contrôle SV introuvable ou sans DataSet: " + e.cbName,
+                "Vérifiez LN0/SampledValueControl@name et @datSet",
+                Severity::Error
+            });
+        } else if (!existsDataset(e.iedName, e.ldInst, e.datasetRef)) {
+            diags_.push_back({
+                ErrorCode::DatasetNotFound,
+                "LN0.DataSet",
+                "DataSet introuvable pour SV: " + e.datasetRef,
+                "Déclarez le DataSet sous LN0 ou corrigez @datSet",
+                Severity::Error
+            });
+        }
+        if (e.smpRate.empty()) {
+            diags_.push_back({
+                ErrorCode::MissingSmpRate,
+                "ConnectedAP.SMV",
+                "Sampled Values sans SmpRate (P[type=\"SmpRate\"])",
+                "Ajoutez P[type=\"SmpRate\"] côté Address",
+                Severity::Warning
+            });
+        }
+    }
+
+    // 4) ConnectedAP -> ldInst (déjà signalé dans buildIndexes_ avec InvalidPath)
+    //    On redéclare en code dédié pour le mode strict, si nécessaire.
+    for (const auto& sn : model_->communication.subNetworks) {
+        for (const auto& cap : sn.connectedAPs) {
+            // GSE
+            for (const auto& g : cap.gses) {
+                if (findLD_(*iedByName_.at(cap.iedName), g.ldInst) == nullptr) {
+                    diags_.push_back({
+                        ErrorCode::InvalidLdRef,
+                        "ConnectedAP.GSE",
+                        "LDevice introuvable: " + g.ldInst + " sur IED " + cap.iedName,
+                        "Contrôlez ldInst vs IED/Server/LDevice",
+                        Severity::Error
+                    });
+                }
+            }
+            // SV
+            for (const auto& v : cap.smvs) {
+                if (findLD_(*iedByName_.at(cap.iedName), v.ldInst) == nullptr) {
+                    diags_.push_back({
+                        ErrorCode::InvalidLdRef,
+                        "ConnectedAP.SMV",
+                        "LDevice introuvable: " + v.ldInst + " sur IED " + cap.iedName,
+                        "Contrôlez ldInst vs IED/Server/LDevice",
+                        Severity::Error
+                    });
+                }
+            }
+        }
+    }
+}
+
 Status SclManager::loadScl(const std::string &filepath) {
     SclParser parser;
     auto res = parser.parseFile(filepath);
@@ -58,6 +194,9 @@ Status SclManager::loadScl(const std::string &filepath) {
     }
     model_ = std::make_unique<SclModel>(std::move(res.value()));
     buildIndexes_();
+
+    //Validation Strict
+    validate_();
 
     // notifier les abonnés
     for (auto& cb : reloadCbs_) cb(*this);

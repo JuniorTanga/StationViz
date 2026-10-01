@@ -1,0 +1,15 @@
+qt_standard_project_setup(REQUIRES 6.8)
+
+add_executable(scl_sld_demo
+    main.cpp
+)
+
+target_include_directories(scl_sld_demo PUBLIC ${PROJECT_SOURCE_DIR}/core/scl)
+target_include_directories(scl_sld_demo PUBLIC ${PROJECT_SOURCE_DIR}/core/sld)
+
+target_link_libraries(scl_sld_demo
+    PRIVATE Qt6::Core
+    PUBLIC sclLib
+    PUBLIC sldLib
+)
+

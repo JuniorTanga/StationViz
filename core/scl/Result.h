@@ -13,6 +13,13 @@ enum class ErrorCode {
     MissingMandatoryField,
     InvalidPath,
     LogicError,
+
+    DatasetNotFound,        // contrôle GSE/SV pointe un DataSet inexistant
+    ControlBlockNotFound,   // GSEControl / SampledValueControl introuvable
+    InvalidLdRef,           // ldInst ne correspond à aucun LDevice
+    BrokenConnectivityNode, // Terminal@connectivityNode vers CN inexistant
+    DuplicateIEDName,       // IED@name en doublon
+    MissingSmpRate          // SV sans P[type="SmpRate"] (warning)
 };
 
 struct Error {

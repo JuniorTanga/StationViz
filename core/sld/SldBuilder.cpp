@@ -38,10 +38,18 @@ std::string SldBuilder::upper(std::string s){
     return s;
 }
 bool SldBuilder::isLikelyBusCN(const std::string& nameOrPath, int degree) const{
-    if (degree >= cfg_.busDegreeThreshold) return true;
+
+    const int hardMin = 4;
+    const int thr = std::max(cfg_.busDegreeThreshold, hardMin);
+    if (degree >= thr) return true;
+
+    // Name hints still allowed, but require at least degree 2 (not leaf CN).
     auto u = upper(nameOrPath);
-    for (const auto& h : cfg_.busNameHints)
-        if (u.find(h) != std::string::npos) return true;
+    bool hint = false;
+    for (const auto& h : cfg_.busNameHints) {
+        if (u.find(h) != std::string::npos) { hint = true; break; }
+    }
+    if (hint && degree >= 2) return true;
     return false;
 }
 
@@ -486,9 +494,15 @@ scl::Status SldBuilder::detectTransformers(const BoostGraph& raw, const Index& r
             TransformerLink tl;
             tl.transformerId = pv.id;
             tl.busA = *it++; tl.busB = *it;
-            const auto& a = raw[*findVertex(rawIdx, tl.busA)];
-            const auto& b = raw[*findVertex(rawIdx, tl.busB)];
-            tl.ssA=a.ss; tl.vlA=a.vl; tl.ssB=b.ss; tl.vlB=b.vl;
+
+            auto findCluster = [&](const NodeId& bus)->std::pair<std::string,std::string>{
+                for (const auto& cl : clusters) if (cl.busNodeId == bus) return {cl.ss, cl.vl};
+                return {"",""};
+            };
+            auto [ssA, vlA] = findCluster(tl.busA);
+            auto [ssB, vlB] = findCluster(tl.busB);
+            tl.ssA = ssA; tl.vlA = vlA; tl.ssB = ssB; tl.vlB = vlB;
+
             out.push_back(std::move(tl));
         }
     }
@@ -512,6 +526,9 @@ scl::Status SldBuilder::makePlan(const BoostGraph& raw, const Index& rawIdx,
         if (pv.kind==NodeKind::Bus) plan.rankTopBus[key].push_back(pv.id);
         else if (pv.kind==NodeKind::Equipment) plan.rankMiddleEq[key].push_back(pv.id);
     }
+
+    for (auto& kv : plan.rankTopBus)   std::sort(kv.second.begin(), kv.second.end());
+    for (auto& kv : plan.rankMiddleEq) std::sort(kv.second.begin(), kv.second.end());
 
     // couplers / feeders / transformers
     detectCouplers(condensed, cIdx, clusters, plan.couplers);

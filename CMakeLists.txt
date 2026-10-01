@@ -12,6 +12,7 @@ qt_standard_project_setup(REQUIRES 6.8)
 
 add_subdirectory(core) #Backend
 add_subdirectory(ui) #Frontend
+add_subdirectory(tests) #Tests
 
 add_executable(${PROJECT_NAME}
     main.cpp

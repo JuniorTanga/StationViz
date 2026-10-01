@@ -14,6 +14,7 @@ class SclManager {
 public:
     SclManager();
 
+
     // Charge et parse un fichier SCL + construit les indexes
     Status loadScl(const std::string& filepath);
 
@@ -26,6 +27,7 @@ public:
     Status printCommunication() const;
     Status printTopology() const; // CE ↔ CN
     Status printEquipmentFromIEDs() const;
+
 
     // Requêtes simples
     Result<const Substation*> findSubstation(const std::string& name) const;
@@ -83,7 +85,8 @@ public:
     const std::unordered_multimap<std::string, DatasetKey>& fcdaToDatasets() const { return fcdaToDatasets_; }
 
     // Diagnostics
-    struct Diag { ErrorCode code; std::string location; std::string message; std::string hint; };
+    enum class Severity { Error, Warning, Info };
+    struct Diag { ErrorCode code; std::string location; std::string message; std::string hint;Severity severity {Severity::Error}; };
     const std::vector<Diag>& diagnostics() const { return diags_; }
 
     // JSON (nlohmann)
@@ -132,6 +135,7 @@ private:
 
     // Diagnostics
     std::vector<Diag> diags_;
+    void validate_();
 
     // Observabilité
     std::vector<ReloadCallback> reloadCbs_;
