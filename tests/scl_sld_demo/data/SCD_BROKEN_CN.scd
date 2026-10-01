@@ -10,7 +10,7 @@
     </Bay>
     <Bay name="L1">
       <ConnectivityNode name="IN" pathName="SS1/VL1/L1/IN"/>
-      <ConnectivityNode name="OUT" pathName="SS1/VL1/L1/UNKNOWN"/>
+      <ConnectivityNode name="OUT" pathName="SS1/VL1/L1/OUT"/>
       <ConductingEquipment type="DIS" name="L1-DS">
         <Terminal name="t1" connectivityNode="SS1/VL1/BUS/BUS1"/>
         <Terminal name="t2" connectivityNode="SS1/VL1/L1/IN"/>

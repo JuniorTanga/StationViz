@@ -1,9 +1,12 @@
 #include "SldIconAtlas.h"
-#include <QtSvg/QSvgRenderer>
 #include <QPainter>
 #include <QSGTexture>
 #include <QQuickWindow>
 #include <cmath>
+
+#ifdef STATIONVIZ_HAVE_SVG
+#include <QtSvg/QSvgRenderer>
+#endif
 
 bool SldIconAtlas::build(const QMap<QString, QString>& idToResource,
                          int iconPxSize, int spacing)
@@ -11,6 +14,14 @@ bool SldIconAtlas::build(const QMap<QString, QString>& idToResource,
     entries_.clear();
     texPerWin_.clear();
 
+#ifndef STATIONVIZ_HAVE_SVG
+    // Without Qt6Svg the equipment symbols cannot be rasterised. Publish an
+    // empty atlas so SldView draws no icons instead of drawing broken ones.
+    Q_UNUSED(idToResource); Q_UNUSED(iconPxSize); Q_UNUSED(spacing);
+    atlas_ = QImage(2, 2, QImage::Format_RGBA8888_Premultiplied);
+    atlas_.fill(Qt::transparent);
+    return false;
+#else
     const int count = idToResource.size();
     if (count <= 0) {
         atlas_ = QImage(2, 2, QImage::Format_RGBA8888_Premultiplied);
@@ -84,6 +95,7 @@ bool SldIconAtlas::build(const QMap<QString, QString>& idToResource,
     p.end();
     atlas_ = std::move(img);
     return true;
+#endif
 }
 
 QSGTexture* SldIconAtlas::textureFor(QQuickWindow* win) const

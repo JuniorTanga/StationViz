@@ -1,4 +1,6 @@
 #include <gtest/gtest.h>
+#include <atomic>
+#include <cstdio>
 #include <fstream>
 #include <string>
 
@@ -7,13 +9,18 @@
 
 using namespace scl;
 
+// Unique per call so parallel/repeated runs cannot collide, and cleaned up by
+// the caller. The previous version wrote a fixed relative path into whatever
+// the CWD happened to be.
+static std::atomic<unsigned> g_tmpCounter{0};
 static std::string write_temp_scd(const std::string& xml) {
-    std::string path = "test_tmp.scd";
+    std::string path = "test_tmp_" + std::to_string(g_tmpCounter++) + ".scd";
     std::ofstream f(path, std::ios::binary);
     f << xml;
     f.close();
     return path;
 }
+static void remove_temp_scd(const std::string& path) { std::remove(path.c_str()); }
 
 static const char* kSCL = R"(<?xml version="1.0" encoding="UTF-8"?>
 <SCL version="2007" revision="B">
@@ -190,4 +197,6 @@ TEST(Scl, LoadAndIndexes) {
     EXPECT_NE(j.find("\"IED1\""), std::string::npos);
     EXPECT_NE(j.find("\"XSWI\""), std::string::npos);
     EXPECT_NE(j.find("S1:VL1:BAY1:CE:Q01"), std::string::npos);
+
+    remove_temp_scd(path);
 }

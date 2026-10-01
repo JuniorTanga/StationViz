@@ -11,6 +11,7 @@ struct ScalarWithUnit {
     double value {0.0};
     std::string unit;        // ex: "V", "A", "Hz"
     std::string multiplier;  // ex: "k", "m", "M"
+    bool valid {true};       // false si le texte n'était pas un nombre fini
 };
 
 struct TerminalRef {
@@ -36,7 +37,9 @@ struct TransformerWinding {
     std::string name;             // T4_1
     std::string type;             // PTW
     std::vector<TerminalRef> terminals;
-    std::optional<TapChangerInfo> tapChanger;
+    // tns:TransformerWinding permits several TapChanger plus one PhaseTapChanger,
+    // so a single optional could not represent a real transformer.
+    std::vector<TapChangerInfo> tapChangers;
     // Résolution post-parse :
     struct ResolvedEnd {
         std::string ss, vl, bay, cn; // CN logique
@@ -169,6 +172,8 @@ struct MmsEndpoint {
 struct AccessPoint {
     std::string name;       // @name
     std::unordered_map<std::string, std::string> address; // <Address>/<P>
+    // One entry per Server element: tns:AccessPoint allows an unbounded number.
+    std::vector<std::unordered_map<std::string, std::string>> serverAddresses;
     std::vector<LogicalDevice> ldevices; // via AccessPoint/Server/LDevice
 };
 
@@ -213,9 +218,24 @@ struct Communication {
 };
 
 // --- Modèle global + indexes
+// SCL/Header
+struct SclHeader {
+    std::string id;
+    std::string version;
+    std::string revision;
+    std::string toolID;
+    std::string nameStructure;
+    std::string text;
+    struct HistoryItem {
+        std::string version, revision, when, who, what, why;
+    };
+    std::vector<HistoryItem> history;
+};
+
 struct SclModel {
     std::string version;         // SCL @version
     std::string revision;        // SCL @revision
+    SclHeader header;            // SCL/Header
     std::vector<Substation> substations;
     std::vector<IED> ieds;
     Communication communication;

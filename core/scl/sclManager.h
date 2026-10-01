@@ -15,11 +15,23 @@ public:
     SclManager();
 
 
-    // Charge et parse un fichier SCL + construit les indexes
+    // Charge et parse un fichier SCL + construit les indexes.
+    // WARNING: on success this replaces the model, so every pointer previously
+    // returned by model()/findIED()/findSubstation()/getLn0Dataset() dangles.
+    // Consumers that cache raw pointers (core/sld does) must rebuild after a
+    // reload.
     Status loadScl(const std::string& filepath);
+
+    // Same, from an in-memory document. Useful for tests.
+    Status loadSclString(const std::string& xml);
 
     // Accès lecture au modèle
     const SclModel* model() const { return model_ ? &(*model_) : nullptr; }
+
+    // True if any diagnostic has Severity::Error. loadScl() can return Ok while
+    // diagnostics() holds errors, so callers must check this explicitly.
+    bool hasErrors() const;
+    bool hasWarnings() const;
 
     // Debug helpers (garde-les pour l'instant)
     Status printSubstations() const;
@@ -100,6 +112,7 @@ public:
     void onReloaded(ReloadCallback cb) { reloadCbs_.push_back(std::move(cb)); }
 
 private:
+    void adopt_(SclModel&& m);
     void buildIndexes_();
 
     const LogicalDevice* findLD_(const IED& ied, const std::string& ldInst) const;

@@ -547,7 +547,7 @@ scl::Status SldBuilder::makePlan(const BoostGraph& raw, const Index& rawIdx,
                 P.label = pt.name;
                 P.hasTapChanger = false;
                 for (const auto& w : pt.windings)
-                    if (w.tapChanger){ P.hasTapChanger = true; break; }
+                    if (!w.tapChangers.empty()){ P.hasTapChanger = true; break; }
 
                 // buses reliés (si détectables dans clusters)
                 std::unordered_set<std::string> busSet;

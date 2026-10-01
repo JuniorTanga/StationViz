@@ -71,26 +71,11 @@ static std::string now_iso(){
     return buf;
 }
 
-// Map error codes to string for reporting/acceptance
-static std::string code_to_string(scl::ErrorCode c){
-    using E = scl::ErrorCode;
-    switch(c){
-        case E::DatasetNotFound:        return "DatasetNotFound";
-        case E::ControlBlockNotFound:   return "ControlBlockNotFound";
-        case E::InvalidLdRef:           return "InvalidLdRef";
-        case E::BrokenConnectivityNode: return "BrokenConnectivityNode";
-        case E::DuplicateIEDName:       return "DuplicateIEDName";
-        case E::MissingSmpRate:         return "MissingSmpRate";
-        case E::InvalidPath:            return "InvalidPath";
-        case E::FileNotFound:           return "FileNotFound";
-        case E::XmlParseError:          return "XmlParseError";
-        case E::SchemaNotSupported:     return "SchemaNotSupported";
-        case E::MissingMandatoryField:  return "MissingMandatoryField";
-        case E::LogicError:             return "LogicError";
-        case E::None:                   return "None";
-        default:                        return "Other";
-    }
-}
+// Error codes map to their own names via scl::to_string, which lives in the
+// library. The previous hand-rolled switch here fell through to "Other" for
+// every code added since, silently weakening the acceptance policy.
+static std::string code_to_string(scl::ErrorCode c){ return scl::to_string(c); }
+
 static std::string severity_to_string(scl::SclManager::Severity s){
     using S = scl::SclManager::Severity;
     switch(s){
@@ -115,7 +100,14 @@ int main(int argc, char** argv){
     }
     json M; mf >> M;
 
-    fs::path outdir = M.value("output_dir", "test_out");
+    // Resolve relative paths against the manifest's own directory, so the
+    // manifest is portable and does not hard-code an absolute install path.
+    const fs::path base = manifestPath.has_parent_path() ? manifestPath.parent_path() : fs::path(".");
+    const auto resolve = [&base](const fs::path& p){
+        return p.is_absolute() ? p : base / p;
+    };
+
+    fs::path outdir = resolve(M.value("output_dir", "test_out"));
     fs::create_directories(outdir);
 
     const bool strict_policy = M.value("strict_policy", true);
@@ -178,7 +170,7 @@ int main(int argc, char** argv){
     for (const auto& T : M["tests"]){
         const std::string id   = T.value("id","");
         const std::string type = T.value("type","");
-        const fs::path file    = T.at("file").get<std::string>();
+        const fs::path file    = resolve(T.at("file").get<std::string>());
         const std::vector<std::string> expected_errors = T.value("expected_errors", std::vector<std::string>{});
 
         fs::path fileOutDir = outdir / id;

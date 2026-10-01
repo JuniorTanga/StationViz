@@ -3,8 +3,31 @@
 #include <sstream>
 #include <vector>
 #include <optional>
+#include <cmath>
+#include <cstdlib>
+#include <cerrno>
+#include <cstring>
+#include <string_view>
 
 using namespace scl;
+
+namespace {
+
+// pugixml is not namespace aware: it matches element names verbatim, so a
+// document declaring a prefix (<scl:SCL xmlns:scl="...">) failed every lookup
+// with a misleading "Missing <SCL> root". Rather than making all 24 lookup
+// sites prefix-aware, normalise the document once: rename every element to its
+// local name. Attribute names are left untouched because SCL never qualifies
+// them in practice.
+void stripElementPrefixes(pugi::xml_node node) {
+    if (const char* qualified = node.name()) {
+        if (const char* colon = ::strrchr(qualified, ':'))
+            node.set_name(colon + 1);
+    }
+    for (auto n : node.children()) stripElementPrefixes(n);
+}
+
+} // namespace
 
 // ---- utils
 static std::optional<CNAddress> parseConnectivityPath(const std::string& path) {
@@ -86,10 +109,29 @@ static void readConductingEquipments(const pugi::xml_node &parent,
     }
 }
 
+// Locale-independent parse that never throws. std::stod used to throw
+// out_of_range/invalid_argument on a garbage <Voltage> and silently accepted
+// "nan"/"inf"; it is also locale-dependent (under fr_FR, "380.5" -> 380).
+static bool parseDoubleStrict(const std::string& text, double& out) {
+    if (text.empty()) return false;
+    const char* first = text.c_str();
+    char* last = nullptr;
+    errno = 0;
+    const double v = std::strtod(first, &last);
+    if (last == first) return false;
+    while (*last == ' ' || *last == '\t' || *last == '\r' || *last == '\n') ++last;
+    if (*last != '\0') return false;
+    if (errno == ERANGE) return false;
+    if (!std::isfinite(v)) return false;
+    out = v;
+    return true;
+}
+
 static std::optional<ScalarWithUnit> readVoltageNode(const pugi::xml_node &vl) {
     if (auto volt = vl.child("Voltage")) {
         ScalarWithUnit sv{};
-        sv.value = std::stod(std::string(volt.text().as_string("0")));
+        const std::string text(volt.text().as_string(""));
+        sv.valid = parseDoubleStrict(text, sv.value);
         sv.unit = volt.attribute("unit").as_string("");
         sv.multiplier = volt.attribute("multiplier").as_string("");
         return sv;
@@ -178,11 +220,16 @@ static void readIEDs(const pugi::xml_node &root, std::vector<IED> &out) {
         readLDevicesUnder(ied, I.ldevices);
 
         // (2) AccessPoint/Server/LDevice (forme canonique)
+        // (2) AccessPoint/Server/LDevice (forme canonique).
+        //     tns:AccessPoint permits an unbounded number of Server elements;
+        //     reading only ap.child("Server") silently dropped every LD after
+        //     the first one.
         for (auto ap : ied.children("AccessPoint")) {
             AccessPoint A{};
             A.name = ap.attribute("name").as_string("");
             A.address = readAddress(ap);
-            if (auto server = ap.child("Server")) {
+            for (auto server : ap.children("Server")) {
+                A.serverAddresses.push_back(readAddress(server));
                 readLDevicesUnder(server, A.ldevices);
             }
             I.accessPoints.push_back(std::move(A));
@@ -237,12 +284,37 @@ static Communication readCommunication(const pugi::xml_node &root) {
 static Result<SclModel> parseDoc(pugi::xml_document &doc) {
     SclModel model{};
 
+    // Normalise prefixed element names before any lookup, so all the
+    // children("X") sites below keep working for both <SCL> and <scl:SCL>.
+    for (auto top : doc.children()) stripElementPrefixes(top);
+
     auto root = doc.child("SCL");
     if (!root) {
-        return Result<SclModel>({ErrorCode::XmlParseError, "Missing <SCL> root"});
+        return Result<SclModel>({ErrorCode::XmlParseError, "Missing <SCL> root element"});
     }
     model.version = root.attribute("version").as_string("");
     model.revision = root.attribute("revision").as_string("");
+
+    if (auto hdr = root.child("Header")) {
+        model.header.id = hdr.attribute("id").as_string("");
+        model.header.version = hdr.attribute("version").as_string("");
+        model.header.revision = hdr.attribute("revision").as_string("");
+        model.header.toolID = hdr.attribute("toolID").as_string("");
+        model.header.nameStructure = hdr.attribute("nameStructure").as_string("");
+        if (auto t = hdr.child("Text")) model.header.text = t.text().as_string("");
+        for (auto h : hdr.children("History")) {
+            for (auto it : h.children("Hitem")) {
+                SclHeader::HistoryItem hi;
+                hi.version = it.attribute("version").as_string("");
+                hi.revision = it.attribute("revision").as_string("");
+                hi.when = it.attribute("when").as_string("");
+                hi.who = it.attribute("who").as_string("");
+                hi.what = it.attribute("what").as_string("");
+                hi.why = it.attribute("why").as_string("");
+                model.header.history.push_back(std::move(hi));
+            }
+        }
+    }
 
     // Substations
     for (auto ss : root.children("Substation")) {
@@ -251,34 +323,51 @@ static Result<SclModel> parseDoc(pugi::xml_document &doc) {
         readLNodes(ss, S.lnodes);
 
         // PowerTransformers
-        for (auto ptNode : ss.children("PowerTransformer")) {
-            PowerTransformer pt;
-            pt.name = ptNode.attribute("name").as_string();
-            pt.desc = ptNode.attribute("desc").as_string();
-            pt.type = ptNode.attribute("type").as_string();
+        // PowerTransformers may sit directly under Substation or inside an
+        // <Equipment>/<Container> wrapper (ED2 style). Reading only the direct
+        // form made powerTransformers=0 on a valid ED2 file.
+        auto readPTs = [&S](const pugi::xml_node& parent) {
+            for (auto ptNode : parent.children("PowerTransformer")) {
+                PowerTransformer pt;
+                pt.name = ptNode.attribute("name").as_string();
+                pt.desc = ptNode.attribute("desc").as_string();
+                pt.type = ptNode.attribute("type").as_string();
 
-            for (auto wNode : ptNode.children("TransformerWinding")) {
-                TransformerWinding w;
-                w.name = wNode.attribute("name").as_string();
-                w.type = wNode.attribute("type").as_string();
+                for (auto wNode : ptNode.children("TransformerWinding")) {
+                    TransformerWinding w;
+                    w.name = wNode.attribute("name").as_string();
+                    w.type = wNode.attribute("type").as_string();
 
-                if (auto tc = wNode.child("TapChanger")) {
-                    TapChangerInfo tci;
-                    tci.name = tc.attribute("name").as_string();
-                    tci.type = tc.attribute("type").as_string();
-                    w.tapChanger = tci;
+                    // A winding may carry several TapChanger plus one
+                    // PhaseTapChanger, so a single optional could not hold them.
+                    auto readTCs = [&w](const pugi::xml_node& wn, const char* tag) {
+                        for (auto tc : wn.children(tag)) {
+                            TapChangerInfo tci;
+                            tci.name = tc.attribute("name").as_string();
+                            tci.type = tc.attribute("type").as_string();
+                            w.tapChangers.push_back(std::move(tci));
+                        }
+                    };
+                    readTCs(wNode, "TapChanger");
+                    readTCs(wNode, "PhaseTapChanger");
+
+                    for (auto tNode : wNode.children("Terminal")) {
+                        TerminalRef tr;
+                        tr.name = tNode.attribute("name").as_string();
+                        tr.cNodeName = tNode.attribute("cNodeName").as_string();
+                        tr.connectivityPath = tNode.attribute("connectivityNode").as_string();
+                        tr.substationName = tNode.attribute("substationName").as_string();
+                        w.terminals.push_back(std::move(tr));
+                    }
+                    pt.windings.push_back(std::move(w));
                 }
-                for (auto tNode : wNode.children("Terminal")) {
-                    TerminalRef tr;
-                    tr.name = tNode.attribute("name").as_string();
-                    tr.cNodeName = tNode.attribute("cNodeName").as_string();
-                    tr.connectivityPath = tNode.attribute("connectivityNode").as_string();
-                    tr.substationName = tNode.attribute("substationName").as_string();
-                    w.terminals.push_back(std::move(tr));
-                }
-                pt.windings.push_back(std::move(w));
+                S.powerTransformers.push_back(std::move(pt));
             }
-            S.powerTransformers.push_back(std::move(pt));
+        };
+        readPTs(ss);
+        for (auto eq : ss.children("Equipment")) {
+            readPTs(eq);
+            for (auto cont : eq.children("Container")) readPTs(cont);
         }
 
         for (auto vl : ss.children("VoltageLevel")) {

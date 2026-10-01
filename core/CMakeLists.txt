@@ -1,8 +1,3 @@
 add_subdirectory(scl)
 add_subdirectory(sld)
-#add_subdirectory(network)
-
-set(SCL_DIR scl/)
-
-find_package(Qt6 REQUIRED COMPONENTS Core)
-
+# add_subdirectory(network)   # not buildable yet, see docs/PLAN.md section 5

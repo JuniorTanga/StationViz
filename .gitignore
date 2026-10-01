@@ -82,3 +82,9 @@ CMakeLists.txt.user*
 /build*/
 /core/sld/boost*/
 /core/network/libiec61850*/
+
+# StationViz: generated test output
+/tests/scl_sld_demo/test_out/
+
+# StationViz: test scratch
+/test_tmp.scd

@@ -597,20 +597,6 @@ void AppContext::fillModelsFromPlanJson()
         }
     }
 
-    // ---- barres de bus (spans) ----
-    for (auto it = busSpanMinX.constBegin(); it != busSpanMinX.constEnd(); ++it) {
-        const QString busId = it.key();
-        const double minX = it.value();
-        const double maxX = busSpanMaxX.value(busId, minX);
-        const double y = pos.value(busId).y();
-        const QString leftId  = busId + "#L";
-        const QString rightId = busId + "#R";
-        ensureNode(leftId,  "Junction", "", minX, y);
-        ensureNode(rightId, "Junction", "", maxX, y);
-        pushEdge(leftId, rightId, "BusSpan");
-    }
-
-
     nodeModel_->endReset();
     edgeModel_->endReset();
 
@@ -652,7 +638,6 @@ QString AppContext::iconForKind(const QString& k) const
     if (K == "TRANSFORMER" || K == "TRANSFORMER2W" || K == "TRANSFORMER_2W")
         return ":/icons/equipment/transformer_2w.svg";
     if (K == "LINE" || K.endsWith("_LINE"))        return ":/icons/equipment/line.svg";
-    if (K == "BUSBAR" || K == "BUSBARSECTION")     return ":/icons/equipment/busbar.svg";
     return ":/icons/equipment/unknown.svg";
 }
 

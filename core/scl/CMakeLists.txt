@@ -1,5 +1,3 @@
-cmake_minimum_required(VERSION 3.20)
-
 add_library(sclLib
     SclManager.h
     SclParser.h
@@ -7,25 +5,24 @@ add_library(sclLib
     SclManager.cpp
     SclTypes.h
     Result.h
+    Result.cpp
     Internet.h
     EquipmentClassifier.h
 )
 
 add_subdirectory(pugixml)
 
-# Entêtes publics
-# target_include_directories(sclLib
-#     PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include
-# )
+# PUBLIC: sldLib resolves <nlohmann/json.hpp> through this include path
+target_include_directories(sclLib PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 
-# C++ standard
-#set_target_properties(sclLib PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED YES)
+target_link_libraries(sclLib PUBLIC pugixmlLib)
 
-target_link_libraries(sclLib PRIVATE pugixmlLib)
+if(MSVC)
+    target_compile_options(sclLib PRIVATE /W4)
+else()
+    target_compile_options(sclLib PRIVATE -Wall -Wextra)
+endif()
 
-# Warnings utiles
-# if (MSVC)
-#     target_compile_options(sclLib PRIVATE /W4)
-# else()
-#     target_compile_options(sclLib PRIVATE -Wall -Wextra -Wpedantic)
-# endif()
+if(BUILD_TESTING)
+    add_subdirectory(tests)
+endif()

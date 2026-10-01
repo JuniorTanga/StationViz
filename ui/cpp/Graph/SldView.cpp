@@ -40,8 +40,36 @@ void SldView::setZoom(qreal z){ if (z<0.05) z=0.05; if (z>20.0) z=20.0; if (qFuz
 void SldView::setPanX(qreal v){ if (qFuzzyCompare(panX_,v)) return; panX_=v; emit panChanged(); update(); }
 void SldView::setPanY(qreal v){ if (qFuzzyCompare(panY_,v)) return; panY_=v; emit panChanged(); update(); }
 
-void SldView::setNodes(NodeModel* m){ if (nodes_==m) return; nodes_=m; emit nodesChanged(); update(); }
-void SldView::setEdges(EdgeModel* m){ if (edges_==m) return; edges_=m; emit edgesChanged(); update(); }
+void SldView::setNodes(NodeModel* m){
+    if (nodes_ == m) return;
+    // The model is usually the same object across reloads; only its contents
+    // change. Without these connections updatePaintNode was never called after
+    // App.openSclFile(), so the canvas stayed blank until the user panned.
+    if (nodes_) disconnect(nodes_, nullptr, this, nullptr);
+    nodes_ = m;
+    if (nodes_) {
+        connect(nodes_, &QAbstractItemModel::modelReset, this, &SldView::update);
+        connect(nodes_, &QAbstractItemModel::dataChanged, this, [this]{ update(); });
+        connect(nodes_, &QAbstractItemModel::rowsInserted, this, [this]{ update(); });
+        connect(nodes_, &QAbstractItemModel::rowsRemoved,  this, [this]{ update(); });
+    }
+    emit nodesChanged();
+    update();
+}
+
+void SldView::setEdges(EdgeModel* m){
+    if (edges_ == m) return;
+    if (edges_) disconnect(edges_, nullptr, this, nullptr);
+    edges_ = m;
+    if (edges_) {
+        connect(edges_, &QAbstractItemModel::modelReset, this, &SldView::update);
+        connect(edges_, &QAbstractItemModel::dataChanged, this, [this]{ update(); });
+        connect(edges_, &QAbstractItemModel::rowsInserted, this, [this]{ update(); });
+        connect(edges_, &QAbstractItemModel::rowsRemoved,  this, [this]{ update(); });
+    }
+    emit edgesChanged();
+    update();
+}
 
 QRectF SldView::computeContentBBox() const {
     if (!nodes_) return {};
@@ -342,7 +370,10 @@ QSGNode* SldView::updatePaintNode(QSGNode* old, UpdatePaintNodeData*)
             auto* verts = reinterpret_cast<QSGGeometry::TexturedPoint2D*>(geom->vertexData());
             int k = 0;
 
-            const float iconH = 46.f; // hauteur "monde" (la largeur suit l’aspect)
+            // Respecte la propriété QML iconWorldHeight. La valeur codée en dur
+            // (46) dépassait le pas vertical du layout (44) et, pour un VT
+            // d'aspect ~1.7,-envoyait l'icône recouvrir la voie voisine.
+            const float iconH = iconWorldHeight_;
 
             for (const auto& n : nodes_->items()) {
                 if (!iconMap_.contains(n.kind)) continue;
@@ -395,12 +426,15 @@ void SldView::mousePressEvent(QMouseEvent* ev) {
         const QPointF pWorld = QPointF((pView.x()-panX_)/zoom_, (pView.y()-panY_)/zoom_);
         const QString id = hitTestNodeId(pWorld);
         if (!id.isEmpty()) emit nodeClicked(id);
+        else emit nodeClicked(QString());   // clic dans le vide : désélectionne
     }
     if (ev->button() == Qt::MiddleButton || (ev->button()==Qt::LeftButton && ev->modifiers() & Qt::AltModifier)) {
         dragging_ = true;
         lastDrag_ = ev->position();
+        ev->accept();
+        return;
     }
-    ev->accept();
+    if (ev->button() == Qt::LeftButton) ev->accept();
 }
 
 void SldView::mouseMoveEvent(QMouseEvent* ev) {
@@ -409,8 +443,17 @@ void SldView::mouseMoveEvent(QMouseEvent* ev) {
         setPanX(panX_ + d.x());
         setPanY(panY_ + d.y());
         lastDrag_ = ev->position();
+        ev->accept();
     }
-    ev->accept();
+}
+
+// Sans ceci dragging_ restait vrai après le premier glissement : le moindre
+// déplacement de souris ensuite déplaçait le diagramme au lieu de sélectionner.
+void SldView::mouseReleaseEvent(QMouseEvent* ev) {
+    if (dragging_) {
+        dragging_ = false;
+        ev->accept();
+    }
 }
 
 QString SldView::hitTestNodeId(const QPointF& worldPt) const {

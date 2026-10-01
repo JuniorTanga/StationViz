@@ -1,10 +1,5 @@
-cmake_minimum_required(VERSION 3.20)
-
 set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
-set(CMAKE_AUTOUIC ON)
-
-find_package(Qt6 6.2 COMPONENTS Quick Concurrent Svg REQUIRED)
 
 add_library(stationviz_ui STATIC
   cpp/AppContext.cpp
@@ -14,25 +9,33 @@ add_library(stationviz_ui STATIC
   cpp/Models/NodeModel.cpp
   cpp/Models/NodeModel.h
   cpp/Models/EdgeModel.h
+  cpp/Models/EdgeModel.cpp
+  cpp/Models/IedModel.cpp
+  cpp/Models/IedModel.h
   cpp/Graph/SldView.cpp
   cpp/Graph/SldView.h
   cpp/Graph/SldIconAtlas.cpp
   cpp/Graph/SldIconAtlas.h
   qml.qrc
-  cpp/Models/IedModel.cpp cpp/Models/IedModel.h
 )
 
 target_include_directories(stationviz_ui PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/cpp)
 
-# target_include_directories(${CORE_DIR})
-
-# Lier aux backends existants (scl + sld)
-# Assure-toi que les cibles 'scl' et 'sld' existent déjà dans ton arbre CMake
 target_link_libraries(stationviz_ui
-  PRIVATE Qt6::Quick Qt6::Qml Qt6::Svg Qt6::Concurrent
+  PUBLIC Qt6::Core Qt6::Gui Qt6::Quick Qt6::Qml Qt6::Concurrent
   PUBLIC sclLib
   PUBLIC sldLib
 )
 
+# Equipment symbols on the SLD need Qt6Svg; without it the SLD still renders,
+# just without icons.
+if(STATIONVIZ_HAVE_SVG)
+  target_link_libraries(stationviz_ui PUBLIC Qt6::Svg)
+  target_compile_definitions(stationviz_ui PUBLIC STATIONVIZ_HAVE_SVG=1)
+endif()
 
-			
+if(MSVC)
+  target_compile_options(stationviz_ui PRIVATE /W4)
+else()
+  target_compile_options(stationviz_ui PRIVATE -Wall -Wextra)
+endif()

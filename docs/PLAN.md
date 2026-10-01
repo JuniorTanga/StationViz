@@ -746,3 +746,74 @@ attempting all six phases at once.
 Append entries here as phases complete. Newest at the bottom.
 
 - **2026-10-01** Review completed, plan written. No code changed yet.
+- **2026-10-01** Baseline commit `675e9c3` (143 modified + 5 untracked paths captured, tree clean).
+  `DataTypeTemplates` decided **out of scope** for the first prototype.
+
+### Phase 0: complete
+
+Build is green on Linux (Qt 6.4.2, gcc 13.3.0). `ctest`: **35/35 pass**.
+
+- Baseline commit first, so every later step is revertible.
+- Deleted the dead trees and stubs listed in §8 Phase 0 item 4 (47 files).
+- Qt floor lowered 6.8 to 6.2 (matches the installed 6.4.2) and `QuickDialogs2` now requested,
+  which `QtQuick.Dialogs`' `FileDialog` needs. `Qt6::Svg` is **optional**: it is absent here
+  (`libqt6svg6-dev` not installed, `sudo` needs a password), so the SLD compiles and runs without
+  equipment symbols via a `STATIONVIZ_HAVE_SVG` guard. Install the dev package to re-enable them.
+- Warnings on for `sclLib`/`sldLib`/`stationviz_ui`.
+- `scl_tests` now **runs and links the real `sclLib`** (was recompiling the sources as `scl_core`).
+  Added `tests_scl_robustness.cpp`, 14 new tests, 15 total.
+- New `tests/ui_smoke`: headless (`QT_QPA_PLATFORM=offscreen`) test of the real `AppContext`
+  pipeline, registered per fixture in CTest. It is what proves the SLD models actually populate,
+  ids stay unique, and edges are not duplicated. Added `EdgeModel::get()` to make this possible.
+- Manifest paths made relative to the manifest; the three fixtures it referenced but that did not
+  exist were dropped, and `REAL_STATION1` (the real Siemens ICD) added. Moved `mnt/data` to `data`.
+- Removed a second hand-rolled nlohmann copy and the checked-in MinGW `.dll`/`.exe`.
+
+Bugs found and fixed, each with a regression test:
+
+| Bug | Fix |
+|---|---|
+| `matchCN` could never resolve a full path against a logical key | `lastSegment` split on `'/'` only; logical keys use `':'`. Now splits on both. This was the sole pre-existing test failure. |
+| `loadScl` threw `std::out_of_range` on a `ConnectedAP` naming an absent IED | `find()` + new `InvalidIedRef` diagnostic. Reproduced before the fix. |
+| `std::stod` threw on garbage/overflow `Voltage`, accepted `nan`/`inf`, and was locale-dependent | `parseDoubleStrict` (locale-independent, finite-only) + `ScalarWithUnit::valid` |
+| `Result<T>` accessors dereferenced a disengaged `optional` (UB) | throw `BadResultAccess`; added `has_value()`, `[[nodiscard]]` |
+| `<scl:SCL>` prefixed documents failed as "Missing `<SCL>` root" | normalise element names once at parse time, so all 24 lookup sites keep working |
+| `AccessPoint` with two `Server`s silently dropped every LD after the first | iterate all `Server` elements; added `AccessPoint::serverAddresses` |
+| `<Equipment>`/`<Container>`-wrapped `PowerTransformer` was invisible | search those containers too |
+| A winding kept only its first `TapChanger`, and `PhaseTapChanger` was dropped | `std::optional` → `vector<TapChangerInfo>` |
+| 3 real problems produced 8 diagnostics, same fact under two codes | `buildIndexes_` no longer duplicates; `ControlBlockNotFound` suppressed when the LD itself is missing (a cascade) |
+| Duplicate `ConnectivityNode@pathName` / `DataSet@name` failed silently | new `DuplicateConnectivityNode` / `DuplicateDataSetName` diagnostics (the latter scoped per IED) |
+| `code_to_string` in the test harness fell through to `"Other"` for every new code, weakening the acceptance policy | delegates to the new `scl::to_string` |
+| **`SldView` never repainted on load** | `setNodes`/`setEdges` connect to `modelReset`/`dataChanged`/`rows*`. This is 2.1, the flagship bug |
+| `dragging_` permanently sticky after one pan | added `mouseReleaseEvent` |
+| Clicking empty space never deselected | emits `nodeClicked("")` |
+| Every bus span emitted **two** identical `BusSpan` edges | removed the duplicated loop in `AppContext.cpp` |
+| `iconForKind` returned a nonexistent `busbar.svg` | removed the branch |
+| `iconWorldHeight` was declared, settable, and ignored (hardcoded `46.f`, which overlapped the adjacent lane) | now actually used |
+
+Two fixtures were **invalid**, not a parser defect: `SCD_BROKEN_CN.scd` declared the CN it was meant
+to be missing, and `SCD_2VL_TR*.scd` nested `PowerTransformer` inside `VoltageLevel` (not schema
+valid, so the parser correctly ignored it). Both rewritten; `SCD_2VL_TR` now yields
+`pt=1` with 2 resolved windings.
+
+### Phase 1: complete (P0, P1, P2)
+
+All of §3 P0, P1 (except the `Communication`/`LN0` layering inversion and `ReportControl`) and P2
+are done, with 15 tests. `scl_sld_demo` acceptance is green (16 fixtures, exit 0).
+
+Still open in Phase 1:
+- **`ReportControl` / `RptEnabled` / `Inputs` / `ExtRef`** are still absent. This is now the
+  **critical path**: B-reports are impossible without it, so no FAT supervision loop.
+- The **layering inversion** (§3 P1 first row) is still present: endpoints still come only from
+  `Communication/.../GSE|SMV`, so an `LN0` control block with no `<Communication>` still yields
+  zero endpoints. Reproduced case is now covered by a test only for the crash, not the zero-result.
+- `mmsEndpoints_` still does not take `AccessPoint/Address` or `Server/Address`; the `"IED1|"` key
+  defect stands.
+- `CNAddress::ss` still unassigned; `Voltage` multiplier still a raw string.
+
+### Phase 2: not started
+The confirmed root cause of `transformers=0` is now **confirmed and localised**: `SldBuilder`
+(`buildRaw`) only walks `VoltageLevel/Bay/ConductingEquipment` and never seeds
+`PowerTransformer` winding terminals into the graph. `substation.scd` has 2 PowerTransformers with
+winding terminals that the parser resolves correctly; the SLD simply never sees them. Alongside the
+regressions already listed in §4.

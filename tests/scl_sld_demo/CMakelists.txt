@@ -1,15 +1,15 @@
-qt_standard_project_setup(REQUIRES 6.8)
-
 add_executable(scl_sld_demo
     main.cpp
 )
 
-target_include_directories(scl_sld_demo PUBLIC ${PROJECT_SOURCE_DIR}/core/scl)
-target_include_directories(scl_sld_demo PUBLIC ${PROJECT_SOURCE_DIR}/core/sld)
-
 target_link_libraries(scl_sld_demo
-    PRIVATE Qt6::Core
-    PUBLIC sclLib
+    PRIVATE sclLib
     PUBLIC sldLib
 )
 
+# Batch runner over the SCD fixtures. Exit code is non-zero if any fixture
+# fails its acceptance policy, so it doubles as a CI gate.
+add_test(
+    NAME scl_sld_demo
+    COMMAND scl_sld_demo ${CMAKE_CURRENT_SOURCE_DIR}/test_manifest.json
+)

@@ -2,6 +2,7 @@
 #pragma once
 #include <QAbstractListModel>
 #include <QString>
+#include <QVariantMap>
 #include <vector>
 
 class EdgeModel : public QAbstractListModel {
@@ -11,6 +12,7 @@ public:
     struct Edge { QString fromId; QString toId; QString kind; };
     enum Roles { FromRole=Qt::UserRole+1, ToRole, KindRole };
     Q_INVOKABLE int count() const { return static_cast<int>(edges_.size()); }
+    Q_INVOKABLE QVariantMap get(int row) const;
 
 
     explicit EdgeModel(QObject* parent=nullptr) : QAbstractListModel(parent) {}
