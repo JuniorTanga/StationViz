@@ -745,6 +745,15 @@ attempting all six phases at once.
 
 Append entries here as phases complete. Newest at the bottom.
 
+- **2026-10-02** Large SCD fixtures gitignored and purged from local history, pushed to GitHub.
+  `station1.scd`, `station_TOG.scd`, `SCD_HEAVY_*`, `SCD_PRIVATE_HEAVY` were removed with
+  `filter-branch` across **three** passes: the first only handled the new paths, but the baseline
+  commit still carried them under the old `mnt/data/` prefix, and two more heavy files
+  (`SCD_PRIVATE_HEAVY`, `station_TOG`) turned up on a second and third sweep. Repo is 0.3 MB.
+  Verified absent from the remote, and the batch runner plus `ui_smoke` now skip absent fixtures so
+  a fresh clone is green.
+- **2026-10-02** `ReportControl` / `Inputs` / `ExtRef` implemented in `sclLib` (see above).
+  `ctest`: 44/44.
 - **2026-10-01** Review completed, plan written. No code changed yet.
 - **2026-10-01** Baseline commit `675e9c3` (143 modified + 5 untracked paths captured, tree clean).
   `DataTypeTemplates` decided **out of scope** for the first prototype.
@@ -801,15 +810,44 @@ valid, so the parser correctly ignored it). Both rewritten; `SCD_2VL_TR` now yie
 All of §3 P0, P1 (except the `Communication`/`LN0` layering inversion and `ReportControl`) and P2
 are done, with 15 tests. `scl_sld_demo` acceptance is green (16 fixtures, exit 0).
 
+### ReportControl / Inputs / ExtRef: done
+
+This was the critical path: without it there is no way to subscribe to a B-report, so no FAT
+supervision loop was possible. Added to `sclLib`:
+
+- `ReportControlMeta` with `rptID`, `confRev`, `buffered`, `intgPd`, `desc`, `TrgOps` and
+  `OptFields`; `ExtRefRef` for `Inputs/ExtRef`.
+- `sclParser` reads both `<ReportControl>` and `<ReportControlBlock>` (the historical name for a
+  buffered block, same attributes), plus `<DataSet><Inputs><ExtRef>`.
+- **Both bit strings are named attributes, not positional.** `TrgOps` is
+  `dchg/qchg/dupd/intg/gi` and `OptFields` is `sequenceNumber/timeStamp/...`. I initially wrote a
+  positional reader and the test caught it immediately.
+- `TrgOps` defaults to `dchg + qchg + gi` when the element is absent, because an IED shipped with
+  `TrgOps=0` delivers nothing until an integrity period fires, and `IntgPd` often defaults to 0.
+- `SclManager::reportControls()` (index keyed `ied|ld|rcbName`), `reportControlsOf(ied)` in
+  document order, and `rcbReference()` which **prefers the SCL `rptID`** (what the server reports
+  and what libiec61850 matches on) and only synthesises `LD/LLN0$RP$` / `$BR$` as a fallback.
+- `toJsonNetworkMap()` gains an `rcb[]` array for the COMMUNICATION tab.
+
+**Severity judgement worth recording.** The first version flagged a missing DataSet as an error and
+fired 1980 times on the real Siemens ICD. That file declares 55 distinct RCB names but only one
+`DataSet`, and no RCB carries an explicit `@datSet`: real vendors rely on the implicit DataSet
+without declaring it. An error there would make the tool fail on most real substation files, so the
+split is now: **explicit `@datSet` that resolves to nothing is an error; implicit undeclared
+DataSet is a warning.** Both are covered by tests.
+
+Verified on `station1.scd`: 36 MMS endpoints, 1980 RCBs (900 buffered), all with an `rptID`, all
+references containing `LLN0`. `ctest`: **44/44 pass**.
+
 Still open in Phase 1:
-- **`ReportControl` / `RptEnabled` / `Inputs` / `ExtRef`** are still absent. This is now the
-  **critical path**: B-reports are impossible without it, so no FAT supervision loop.
-- The **layering inversion** (§3 P1 first row) is still present: endpoints still come only from
-  `Communication/.../GSE|SMV`, so an `LN0` control block with no `<Communication>` still yields
-  zero endpoints. Reproduced case is now covered by a test only for the crash, not the zero-result.
+- The **layering inversion** (§3 P1 first row) is still present for GOOSE/SV: endpoints still come
+  only from `Communication/.../GSE|SMV`, so an `LN0` control block with no `<Communication>` still
+  yields zero endpoints. (RCBs are unaffected: they need no Communication mapping at all.)
 - `mmsEndpoints_` still does not take `AccessPoint/Address` or `Server/Address`; the `"IED1|"` key
   defect stands.
 - `CNAddress::ss` still unassigned; `Voltage` multiplier still a raw string.
+- `ReportControl` is read only under `LN0`. A control block declared under an `LN` (legal for
+  client-side RCBs in some profiles) is not yet covered.
 
 ### Phase 2: not started
 The confirmed root cause of `transformers=0` is now **confirmed and localised**: `SldBuilder`

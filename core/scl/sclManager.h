@@ -70,9 +70,26 @@ public:
     // CN
     bool matchCN(const std::string& a, const std::string& b) const;
 
+    // Report control blocks. This is what a client needs to subscribe to
+    // B-reports; it is independent of the Communication/GOOSE endpoints.
+    // Key is ied|ldInst|rcbName, which is also the MMS rcbReference modulo the
+    // LN name and '$' separator.
+    const std::unordered_map<std::string, const ReportControlMeta*>& reportControls() const {
+        return rptCtrls_;
+    }
+
+    // All RCBs for one IED, in document order.
+    std::vector<const ReportControlMeta*> reportControlsOf(const std::string& iedName) const;
+
+    // Full MMS object reference of an RCB, e.g. "LD1/LLN0$RP$urcbA".
+    // Falls back to rptID when the SCL provides one, since that is what the
+    // server reports and what libiec61850 matches on.
+    static std::string rcbReference(const std::string& ldInst,
+                                    const ReportControlMeta& rc);
+
     // Endpoints réseau
     const std::unordered_map<std::string, GseEndpoint>& gseEndpoints() const { return gseEndpoints_; }
-    const std::unordered_map<std::string, SvEndpoint>&  svEndpoints()  const { return svEndpoints_;  }
+    const std::unordered_map<std::string, SvEndpoint>&  svEndpoints()  const { return svEndpoints_; }
     const std::unordered_map<std::string, MmsEndpoint>& mmsEndpoints() const { return mmsEndpoints_; }
 
     // Lien primaire <-> LNodeRef
@@ -116,6 +133,8 @@ private:
     void buildIndexes_();
 
     const LogicalDevice* findLD_(const IED& ied, const std::string& ldInst) const;
+    // LDevice that owns a given ReportControlMeta (identified by address).
+    std::string ldInstOf(const IED& ied, const ReportControlMeta* rc) const;
     const LogicalNode*   findLN_(const LogicalDevice& ld, const std::string& lnClass,
                                  const std::string& lnInst, const std::string& prefix) const;
 
@@ -141,6 +160,9 @@ private:
     std::unordered_map<std::string, GseEndpoint> gseEndpoints_; // key: ied|ld|cb
     std::unordered_map<std::string, SvEndpoint>  svEndpoints_;  // key: ied|ld|cb
     std::unordered_map<std::string, MmsEndpoint> mmsEndpoints_; // key: ied|ap
+
+    // Report control blocks: key ied|ld|rcbName
+    std::unordered_map<std::string, const ReportControlMeta*> rptCtrls_;
 
     // NEW: datasets & mapping FCDA
     std::unordered_map<DatasetKey, const DataSet*, DatasetKeyHash> datasets_;

@@ -153,7 +153,87 @@ static void readDataSetsUnderLN0(const pugi::xml_node& ln0, std::vector<DataSet>
             r.fc = f.attribute("fc").as_string("");
             D.members.push_back(std::move(r));
         }
+        // <Inputs><ExtRef>: members whose value arrives over GOOSE from another
+        // IED, so there is no local FCDA for them.
+        for (auto inputs : ds.children("Inputs")) {
+            for (auto e : inputs.children("ExtRef")) {
+                ExtRefRef r{};
+                r.iedName  = e.attribute("iedName").as_string("");
+                r.ldInst   = e.attribute("ldInst").as_string("");
+                r.prefix   = e.attribute("prefix").as_string("");
+                r.lnClass  = e.attribute("lnClass").as_string("");
+                r.lnInst   = e.attribute("lnInst").as_string("");
+                r.doName   = e.attribute("doName").as_string("");
+                r.daName   = e.attribute("daName").as_string("");
+                r.fc       = e.attribute("fc").as_string("");
+                r.intgPd   = e.attribute("intgPd").as_string("");
+                D.extRefs.push_back(std::move(r));
+            }
+        }
         out.push_back(std::move(D));
+    }
+}
+
+// tns:TrgOps is a bit string whose SCL attributes are named (dchg, qchg,
+// dupd, intg, gi), not positional. Read by name; leave a flag at its default
+// when the attribute is absent.
+static void applyTrgOps(const pugi::xml_node& parent, ReportControlMeta& rc) {
+    auto node = parent.child("TrgOps");
+    if (!node) return;
+    struct Field { const char* attr; bool* flag; };
+    const Field fields[] = {
+        {"dchg", &rc.trgOps.dataChange},
+        {"qchg", &rc.trgOps.qualityChange},
+        {"dupd", &rc.trgOps.dataUpdate},
+        {"intg", &rc.trgOps.integrity},
+        {"gi",   &rc.trgOps.generalInterrogation},
+    };
+    for (const auto& f : fields) {
+        const std::string v = node.attribute(f.attr).as_string("");
+        if (!v.empty()) *f.flag = (v == "true" || v == "1");
+    }
+}
+
+static void applyOptFields(const pugi::xml_node& parent, ReportControlMeta& rc) {
+    auto node = parent.child("OptFields");
+    if (!node) return;
+    // These bits are named attributes, not positional.
+    struct Field { const char* attr; bool* flag; };
+    const Field fields[] = {
+        {"sequenceNumber",     &rc.optFields.seqNum},
+        {"timeStamp",          &rc.optFields.timeStamp},
+        {"dataSet",            &rc.optFields.dataSet},
+        {"reasonForInclusion", &rc.optFields.reasonForInclusion},
+        {"configRef",          &rc.optFields.configRef},
+        {"bufOvfl",            &rc.optFields.bufOvfl},
+        {"entryID",            &rc.optFields.entryID},
+        {"confRev",            &rc.optFields.confRev},
+        {"subSeqNum",          &rc.optFields.subSeqNum},
+    };
+    for (const auto& f : fields) {
+        const std::string v = node.attribute(f.attr).as_string("");
+        if (!v.empty()) *f.flag = (v == "true" || v == "1");
+    }
+}
+
+// tns:ReportControl (B-reports) and tns:ReportControlBlock (the historical
+// name for a buffered block) carry the same attributes, so read both.
+static void readRptCtrlsUnderLN0(const pugi::xml_node& ln0,
+                                 std::vector<ReportControlMeta>& out) {
+    for (const char* tag : {"ReportControl", "ReportControlBlock"}) {
+        for (auto rcNode : ln0.children(tag)) {
+            ReportControlMeta R{};
+            R.name    = rcNode.attribute("name").as_string("");
+            R.rptID   = rcNode.attribute("rptID").as_string("");
+            R.datSet  = rcNode.attribute("datSet").as_string("");
+            R.confRev = rcNode.attribute("confRev").as_string("");
+            R.desc    = rcNode.attribute("desc").as_string("");
+            R.intgPd  = rcNode.attribute("intgPd").as_string("");
+            R.buffered = rcNode.attribute("buffered").as_bool(false);
+            applyTrgOps(rcNode, R);
+            applyOptFields(rcNode, R);
+            out.push_back(std::move(R));
+        }
     }
 }
 
@@ -189,6 +269,7 @@ static void readLDevicesUnder(const pugi::xml_node &parent,
             readDataSetsUnderLN0(ln0, d.ln0.datasets);
             readGseCtrlsUnderLN0(ln0, d.ln0.gseCtrls);
             readSmvCtrlsUnderLN0(ln0, d.ln0.smvCtrls);
+            readRptCtrlsUnderLN0(ln0, d.ln0.rptCtrls);
 
             LogicalNode ln{};
             ln.prefix = ln0.attribute("prefix").as_string("");

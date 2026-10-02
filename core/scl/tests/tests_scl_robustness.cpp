@@ -267,3 +267,248 @@ TEST(SclDiagnostics, DuplicateDataSetNameIsDiagnosed) {
 }
 
 } // namespace
+
+// ============================================================================
+// ReportControl / RptEnabled / Inputs / ExtRef.
+//
+// These are the control blocks a client subscribes to for B-reports. They were
+// entirely absent, which made it impossible to write a report handler and so
+// blocked the whole FAT supervision loop.
+// ============================================================================
+
+TEST(SclReportControl, ReportControlIsParsed) {
+    const std::string xml = kHeader +
+        "<SCL version=\"2007\" revision=\"B\"><IED name=\"IED1\">"
+        "<AccessPoint name=\"AP1\"><Server><LDevice inst=\"LD1\">"
+        "<LN0 lnClass=\"LLN0\">"
+        "<DataSet name=\"dsUrgent\">"
+        "<FCDA ldInst=\"LD1\" prefix=\"\" lnClass=\"GGIO\" lnInst=\"1\" doName=\"Ind1\" fc=\"ST\"/>"
+        "</DataSet>"
+        "<ReportControl name=\"urcbUrgent\" rptID=\"IED1LD1/LLN0$RP$urcbUrgent\""
+        " confRev=\"1\" buffered=\"true\" intgPd=\"5000\" desc=\"urgent alarms\">"
+        "<TrgOps dchg=\"true\" qchg=\"true\" dupd=\"false\" intg=\"false\" gi=\"true\"/>"
+        "<OptFields sequenceNumber=\"true\" timeStamp=\"true\" reasonForInclusion=\"true\"/>"
+        "</ReportControl>"
+        "</LN0></LDevice></Server></AccessPoint></IED></SCL>\n";
+
+    SclManager mgr;
+    ASSERT_TRUE(mgr.loadSclString(xml));
+    ASSERT_EQ(mgr.model()->ieds.size(), 1u);
+    const auto& ap = mgr.model()->ieds[0].accessPoints[0];
+    ASSERT_EQ(ap.ldevices.size(), 1u);
+    const auto& rcs = ap.ldevices[0].ln0.rptCtrls;
+    ASSERT_EQ(rcs.size(), 1u);
+
+    const auto& rc = rcs[0];
+    EXPECT_EQ(rc.name, "urcbUrgent");
+    EXPECT_EQ(rc.rptID, "IED1LD1/LLN0$RP$urcbUrgent");
+    EXPECT_EQ(rc.confRev, "1");
+    EXPECT_EQ(rc.desc, "urgent alarms");
+    EXPECT_EQ(rc.intgPd, "5000");
+    EXPECT_TRUE(rc.buffered) << "@buffered=\"true\" was ignored";
+
+    // TrgOps bits are named attributes (dchg/qchg/dupd/intg/gi).
+    EXPECT_TRUE (rc.trgOps.dataChange);
+    EXPECT_TRUE (rc.trgOps.qualityChange);
+    EXPECT_FALSE(rc.trgOps.dataUpdate);
+    EXPECT_FALSE(rc.trgOps.integrity);
+    EXPECT_TRUE (rc.trgOps.generalInterrogation);
+
+    // OptFields likewise.
+    EXPECT_TRUE (rc.optFields.seqNum);
+    EXPECT_TRUE (rc.optFields.timeStamp);
+    EXPECT_TRUE (rc.optFields.reasonForInclusion);
+    EXPECT_FALSE(rc.optFields.dataSet);
+}
+
+TEST(SclReportControl, ReportControlBlockIsAlsoParsed) {
+    // tns:ReportControlBlock is the historical name for a buffered block and
+    // carries the same attributes.
+    const std::string xml = kHeader +
+        "<SCL version=\"2007\" revision=\"B\"><IED name=\"IED1\">"
+        "<AccessPoint name=\"AP1\"><Server><LDevice inst=\"LD1\">"
+        "<LN0 lnClass=\"LLN0\">"
+        "<DataSet name=\"brcbTime\"><FCDA ldInst=\"LD1\" prefix=\"\" lnClass=\"GGIO\" lnInst=\"1\" doName=\"Ind1\" fc=\"ST\"/></DataSet>"
+        "<ReportControlBlock name=\"brcbTime\" rptID=\"IED1LD1/LLN0$BR$brcbTime\" confRev=\"1\" buffered=\"true\"/>"
+        "</LN0></LDevice></Server></AccessPoint></IED></SCL>\n";
+
+    SclManager mgr;
+    ASSERT_TRUE(mgr.loadSclString(xml));
+    const auto& rcs = mgr.model()->ieds[0].accessPoints[0].ldevices[0].ln0.rptCtrls;
+    ASSERT_EQ(rcs.size(), 1u);
+    EXPECT_EQ(rcs[0].name, "brcbTime");
+    EXPECT_TRUE(rcs[0].buffered);
+}
+
+TEST(SclReportControl, TrgOpsDefaultsWhenAbsent) {
+    const std::string xml = kHeader +
+        "<SCL version=\"2007\" revision=\"B\"><IED name=\"IED1\">"
+        "<AccessPoint name=\"AP1\"><Server><LDevice inst=\"LD1\">"
+        "<LN0 lnClass=\"LLN0\">"
+        "<DataSet name=\"urcbA\"><FCDA ldInst=\"LD1\" prefix=\"\" lnClass=\"GGIO\" lnInst=\"1\" doName=\"Ind1\" fc=\"ST\"/></DataSet>"
+        "<ReportControl name=\"urcbA\" rptID=\"IED1LD1/LLN0$RP$urcbA\" confRev=\"1\"/>"
+        "</LN0></LDevice></Server></AccessPoint></IED></SCL>\n";
+
+    SclManager mgr;
+    ASSERT_TRUE(mgr.loadSclString(xml));
+    const auto& rc = mgr.model()->ieds[0].accessPoints[0].ldevices[0].ln0.rptCtrls[0];
+    // No <TrgOps>: an IED shipped this way delivers nothing until an integrity
+    // period fires, so the defaults must ask for data/quality change + GI.
+    EXPECT_TRUE (rc.trgOps.dataChange);
+    EXPECT_TRUE (rc.trgOps.qualityChange);
+    EXPECT_TRUE (rc.trgOps.generalInterrogation);
+    EXPECT_FALSE(rc.trgOps.integrity);
+}
+
+TEST(SclReportControl, ExplicitMissingDatasetIsAnError) {
+    // An explicit @datSet that resolves to nothing is an unambiguous
+    // authoring error.
+    const std::string xml = kHeader +
+        "<SCL version=\"2007\" revision=\"B\"><IED name=\"IED1\">"
+        "<AccessPoint name=\"AP1\"><Server><LDevice inst=\"LD1\">"
+        "<LN0 lnClass=\"LLN0\">"
+        "<ReportControl name=\"urcbA\" datSet=\"dsGhost\" rptID=\"IED1LD1/LLN0$RP$urcbA\" confRev=\"1\"/>"
+        "</LN0></LDevice></Server></AccessPoint></IED></SCL>\n";
+
+    SclManager mgr;
+    ASSERT_TRUE(mgr.loadSclString(xml));
+    bool found = false;
+    for (const auto& d : mgr.diagnostics())
+        if (d.code == ErrorCode::DatasetNotFound && d.severity == SclManager::Severity::Error)
+            found = true;
+    EXPECT_TRUE(found) << "an explicit @datSet with no DataSet must be an error";
+    EXPECT_TRUE(mgr.hasErrors());
+}
+
+TEST(SclReportControl, ImplicitMissingDatasetIsOnlyAWarning) {
+    // No @datSet and no matching <DataSet>: the RCB relies on an implicit
+    // DataSet the SCL never declares. Real vendor files do this extensively
+    // (the Siemens export declares 55 RCB names and one DataSet), and the block
+    // is still subscribable, so this must not fail the document.
+    const std::string xml = kHeader +
+        "<SCL version=\"2007\" revision=\"B\"><IED name=\"IED1\">"
+        "<AccessPoint name=\"AP1\"><Server><LDevice inst=\"LD1\">"
+        "<LN0 lnClass=\"LLN0\">"
+        "<ReportControl name=\"urcbGhost\" rptID=\"IED1LD1/LLN0$RP$urcbGhost\" confRev=\"1\"/>"
+        "</LN0></LDevice></Server></AccessPoint></IED></SCL>\n";
+
+    SclManager mgr;
+    ASSERT_TRUE(mgr.loadSclString(xml));
+    bool warned = false;
+    for (const auto& d : mgr.diagnostics())
+        if (d.code == ErrorCode::DatasetNotFound && d.severity == SclManager::Severity::Warning)
+            warned = true;
+    EXPECT_TRUE(warned) << "an undeclared implicit DataSet should be reported";
+    EXPECT_FALSE(mgr.hasErrors())
+        << "a vendor-style implicit DataSet must not fail a valid document";
+}
+
+TEST(SclReportControl, ImplicitDatasetNameIsAccepted) {
+    // An unbuffered RCB addresses an implicit DataSet named after the control
+    // block, so a missing @datSet is legitimate when that DataSet exists.
+    const std::string xml = kHeader +
+        "<SCL version=\"2007\" revision=\"B\"><IED name=\"IED1\">"
+        "<AccessPoint name=\"AP1\"><Server><LDevice inst=\"LD1\">"
+        "<LN0 lnClass=\"LLN0\">"
+        "<DataSet name=\"urcbA\"><FCDA ldInst=\"LD1\" prefix=\"\" lnClass=\"GGIO\" lnInst=\"1\" doName=\"Ind1\" fc=\"ST\"/></DataSet>"
+        "<ReportControl name=\"urcbA\" rptID=\"IED1LD1/LLN0$RP$urcbA\" confRev=\"1\" buffered=\"false\"/>"
+        "</LN0></LDevice></Server></AccessPoint></IED></SCL>\n";
+
+    SclManager mgr;
+    ASSERT_TRUE(mgr.loadSclString(xml));
+    for (const auto& d : mgr.diagnostics())
+        EXPECT_NE(d.code, ErrorCode::DatasetNotFound)
+            << "an unbuffered RCB must accept the implicit DataSet: " << d.message;
+}
+
+TEST(SclReportControl, ExtRefIsParsed) {
+    const std::string xml = kHeader +
+        "<SCL version=\"2007\" revision=\"B\"><IED name=\"IED1\">"
+        "<AccessPoint name=\"AP1\"><Server><LDevice inst=\"LD1\">"
+        "<LN0 lnClass=\"LLN0\">"
+        "<DataSet name=\"dsWithExt\">"
+        "<FCDA ldInst=\"LD1\" prefix=\"\" lnClass=\"GGIO\" lnInst=\"1\" doName=\"Ind1\" fc=\"ST\"/>"
+        "<Inputs><ExtRef iedName=\"IED2\" ldInst=\"LD1\" prefix=\"\" lnClass=\"XCBR\" lnInst=\"1\""
+        " doName=\"Pos\" daName=\"stVal\" fc=\"ST\" intgPd=\"1000\"/></Inputs>"
+        "</DataSet>"
+        "</LN0></LDevice></Server></AccessPoint></IED></SCL>\n";
+
+    SclManager mgr;
+    ASSERT_TRUE(mgr.loadSclString(xml));
+    const auto& ds = mgr.model()->ieds[0].accessPoints[0].ldevices[0].ln0.datasets[0];
+    ASSERT_EQ(ds.members.size(), 1u);
+    ASSERT_EQ(ds.extRefs.size(), 1u) << "<Inputs><ExtRef> was not parsed";
+    EXPECT_EQ(ds.extRefs[0].iedName, "IED2");
+    EXPECT_EQ(ds.extRefs[0].lnClass, "XCBR");
+    EXPECT_EQ(ds.extRefs[0].doName, "Pos");
+    EXPECT_EQ(ds.extRefs[0].daName, "stVal");
+    EXPECT_EQ(ds.extRefs[0].intgPd, "1000");
+}
+
+TEST(SclReportControl, RealSiemensIcdYieldsReportControls) {
+    // station1.scd is a real Siemens SIEDIG export: 36 IEDs and ~1980
+    // ReportControl elements. Guarded because the file is gitignored.
+    SclManager mgr;
+    const auto st = mgr.loadScl("tests/tests_files/station1.scd");
+    if (!st) GTEST_SKIP() << "station1.scd not available (gitignored large fixture)";
+    ASSERT_NE(mgr.model(), nullptr);
+
+    size_t rcbCount = 0, bufferedCount = 0, withRptId = 0;
+    for (const auto& ied : mgr.model()->ieds) {
+        auto count = [&](const LogicalDevice& ld) {
+            for (const auto& rc : ld.ln0.rptCtrls) {
+                ++rcbCount;
+                if (rc.buffered) ++bufferedCount;
+                if (!rc.rptID.empty()) ++withRptId;
+            }
+        };
+        for (const auto& ld : ied.ldevices) count(ld);
+        for (const auto& ap : ied.accessPoints)
+            for (const auto& ld : ap.ldevices) count(ld);
+    }
+    printf("      station1.scd: %zu ReportControls (%zu buffered, %zu with rptID)\n",
+           rcbCount, bufferedCount, withRptId);
+    EXPECT_GT(rcbCount, 1000u);
+    EXPECT_EQ(withRptId, rcbCount) << "every RCB should carry an rptID";
+    EXPECT_GT(bufferedCount, 0u) << "expected some buffered RCBs in a real IED";
+}
+
+TEST(SclReportControl, ManagerIndexesAndResolvesRcbReferences) {
+    const std::string xml = kHeader +
+        "<SCL version=\"2007\" revision=\"B\"><IED name=\"IED1\">"
+        "<AccessPoint name=\"AP1\"><Server><LDevice inst=\"LD1\">"
+        "<LN0 lnClass=\"LLN0\">"
+        "<DataSet name=\"dsA\"><FCDA ldInst=\"LD1\" prefix=\"\" lnClass=\"GGIO\" lnInst=\"1\" doName=\"Ind1\" fc=\"ST\"/></DataSet>"
+        "<ReportControl name=\"urcbA\" datSet=\"dsA\" confRev=\"1\"/>"
+        "<ReportControl name=\"brcbB\" datSet=\"dsA\" confRev=\"1\" buffered=\"true\"/>"
+        "</LN0></LDevice></Server></AccessPoint></IED></SCL>\n";
+
+    SclManager mgr;
+    ASSERT_TRUE(mgr.loadSclString(xml));
+
+    const auto& idx = mgr.reportControls();
+    EXPECT_EQ(idx.size(), 2u);
+    EXPECT_NE(idx.find("IED1|LD1|urcbA"), idx.end());
+    EXPECT_NE(idx.find("IED1|LD1|brcbB"), idx.end());
+
+    const auto forIed = mgr.reportControlsOf("IED1");
+    ASSERT_EQ(forIed.size(), 2u);
+    EXPECT_EQ(forIed[0]->name, "brcbB");
+    EXPECT_EQ(forIed[1]->name, "urcbA");
+    EXPECT_TRUE(mgr.reportControlsOf("NO_SUCH_IED").empty());
+
+    // With no rptID in the SCL, the reference must be built with '$'
+    // separators: '$RP$' for unbuffered, '$BR$' for buffered.
+    EXPECT_EQ(SclManager::rcbReference("LD1", *forIed[1]), "LD1/LLN0$RP$dsA");
+    EXPECT_EQ(SclManager::rcbReference("LD1", *forIed[0]), "LD1/LLN0$BR$dsA");
+}
+
+TEST(SclReportControl, RcbReferencePrefersSclRptId) {
+    // rptID is what the server reports and what libiec61850 matches, so it
+    // must win over any reconstruction from the parts.
+    ReportControlMeta rc;
+    rc.name = "urcbA";
+    rc.datSet = "dsA";
+    rc.rptID = "IED1LD1/LLN0$RP$urcbA";
+    EXPECT_EQ(SclManager::rcbReference("LD1", rc), "IED1LD1/LLN0$RP$urcbA");
+}

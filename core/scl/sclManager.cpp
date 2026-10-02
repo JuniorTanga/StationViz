@@ -2,6 +2,7 @@
 #include "SclParser.h"
 #include "EquipmentClassifier.h"
 #include "nlohmann/json.hpp"
+#include <algorithm>
 #include <iostream>
 #include <sstream>
 
@@ -147,11 +148,65 @@ void SclManager::validate_() {
         }
     }
 
-    // 3) GOOSE/SV -> DataSet: existence réelle du DataSet référencé
+    // 2b) ReportControl validation. These are the control blocks a client
+    // subscribes to for B-reports, and they are independent of Communication,
+    // so they are checked directly on the IED side.
     auto existsDataset = [&](const std::string& ied, const std::string& ld, const std::string& ds){
         DatasetKey dk{ied, ld, ds};
         return datasets_.find(dk) != datasets_.end();
     };
+
+    for (const auto& ied : model_->ieds) {
+        auto checkRpts = [&](const std::string& ldInst, const LogicalDevice& ld) {
+            for (const auto& rc : ld.ln0.rptCtrls) {
+                const std::string where =
+                    ied.name + "/" + ldInst + "/LN0/" + rc.name;
+
+                if (rc.name.empty()) {
+                    diags_.push_back({
+                        ErrorCode::MissingMandatoryField, where,
+                        "ReportControl sans @name",
+                        "Chaque ReportControl doit avoir un nom", Severity::Error
+                    });
+                    continue;
+                }
+                // An unbuffered RCB uses an implicit DataSet named after the
+                // control block, so @datSet may legitimately be absent.
+                const std::string dsName =
+                    rc.datSet.empty() ? rc.name : rc.datSet;
+                if (existsDataset(ied.name, ldInst, dsName)) continue;
+
+                if (rc.datSet.empty()) {
+                    // No @datSet and no matching <DataSet>: the RCB relies on a
+                    // DataSet the SCL never declares. This is widespread in real
+                    // vendor files (the Siemens SIEDIG export declares 55 RCB
+                    // names and a single DataSet), and the block is still
+                    // subscribable at runtime, so report it as a warning rather
+                    // than failing the document.
+                    diags_.push_back({
+                        ErrorCode::DatasetNotFound, where,
+                        "ReportControl sans DataSet déclaré (implicite): " + dsName,
+                        "Un RCB non bufferisé utilise un DataSet implicite portant "
+                        "le nom du ReportControl; il n'est pas déclaré dans ce SCL. "
+                        "Vérifiez auprès de l'IED.",
+                        Severity::Warning
+                    });
+                } else {
+                    // An explicit @datSet that resolves to nothing is an
+                    // unambiguous authoring error.
+                    diags_.push_back({
+                        ErrorCode::DatasetNotFound, where,
+                        "DataSet introuvable pour ReportControl: " + dsName,
+                        "Déclarez le DataSet sous LN0 ou corrigez @datSet",
+                        Severity::Error
+                    });
+                }
+            }
+        };
+        for (const auto& ld : ied.ldevices) checkRpts(ld.inst, ld);
+        for (const auto& ap : ied.accessPoints)
+            for (const auto& ld : ap.ldevices) checkRpts(ld.inst, ld);
+    }
 
     auto findLDByName = [&](const std::string& ied, const std::string& ld)->const LogicalDevice* {
         auto it = iedByName_.find(ied);
@@ -317,6 +372,7 @@ void SclManager::buildIndexes_() {
     gseEndpoints_.clear();
     svEndpoints_.clear();
     mmsEndpoints_.clear();
+    rptCtrls_.clear();
     diags_.clear();
     datasets_.clear();
     fcdaToDatasets_.clear();
@@ -469,6 +525,46 @@ void SclManager::buildIndexes_() {
         for (const auto& ap : ied.accessPoints)
             for (const auto& ld : ap.ldevices) addDatasetsOf(ied.name, ld);
     }
+
+    // --- Index des ReportControlBlocks
+    auto addRctlsOf = [this](const std::string& iedName, const LogicalDevice& ld) {
+        for (const auto& rc : ld.ln0.rptCtrls) {
+            if (rc.name.empty()) continue;
+            rptCtrls_.emplace(iedName + "|" + ld.inst + "|" + rc.name, &rc);
+        }
+    };
+    for (const auto& ied : model_->ieds) {
+        for (const auto& ld : ied.ldevices) addRctlsOf(ied.name, ld);
+        for (const auto& ap : ied.accessPoints)
+            for (const auto& ld : ap.ldevices) addRctlsOf(ied.name, ld);
+    }
+}
+
+std::vector<const ReportControlMeta*>
+SclManager::reportControlsOf(const std::string& iedName) const {
+    std::vector<const ReportControlMeta*> out;
+    const std::string prefix = iedName + "|";
+    for (const auto& kv : rptCtrls_) {
+        if (kv.first.compare(0, prefix.size(), prefix) == 0) out.push_back(kv.second);
+    }
+    // rptCtrls_ is an unordered_map, so restore document order for a stable UI.
+    std::sort(out.begin(), out.end(),
+              [](const ReportControlMeta* a, const ReportControlMeta* b) {
+                  if (a->name != b->name) return a->name < b->name;
+                  return a->rptID < b->rptID;
+              });
+    return out;
+}
+
+std::string SclManager::rcbReference(const std::string& ldInst,
+                                     const ReportControlMeta& rc) {
+    // The SCL's rptID is the authoritative name: it is what the server reports
+    // and what libiec61850 matches rptId against. Only fall back to building the
+    // reference from the parts when the file omits it.
+    if (!rc.rptID.empty()) return rc.rptID;
+    const std::string dsName = rc.datSet.empty() ? rc.name : rc.datSet;
+    // Unbuffered blocks live under $RP$, buffered ones under $BR$.
+    return ldInst + "/LLN0$" + (rc.buffered ? "BR$" : "RP$") + dsName;
 }
 
 bool SclManager::matchCN(const std::string& a, const std::string& b) const {
@@ -1003,7 +1099,62 @@ std::string SclManager::toJsonNetworkMap() const
         root["sv"].push_back(std::move(j));
     }
 
+    // Report control blocks. Unlike GOOSE/SV these need no Communication
+    // mapping, so they are emitted for every IED that declares one. This is
+    // what the COMMUNICATION tab and the MMS supervisor both read.
+    root["rcb"] = json::array();
+    for (const auto& ied : model_ ? model_->ieds : std::vector<IED>{}) {
+        for (const auto& rc : reportControlsOf(ied.name)) {
+            json j;
+            j["ied"]      = ied.name;
+            j["name"]     = rc->name;
+            j["rptID"]    = rc->rptID;
+            j["ref"]      = rcbReference(ldInstOf(ied, rc), *rc);
+            j["confRev"]  = rc->confRev;
+            j["buffered"] = rc->buffered;
+            j["intgPd"]   = rc->intgPd;
+            j["desc"]     = rc->desc;
+            const std::string dsName = rc->datSet.empty() ? rc->name : rc->datSet;
+            j["dataset"]  = rc->datSet.empty() ? std::string{} : rc->datSet;
+            j["datasetImplicit"] = rc->datSet.empty();
+            j["datasetDeclared"] = getLn0Dataset(ied.name, ldInstOf(ied, rc), dsName) != nullptr;
+            j["members"]  = resolveDatasetMembers(ied.name, ldInstOf(ied, rc), dsName);
+            j["trgOps"] = {
+                {"dchg", rc->trgOps.dataChange},
+                {"qchg", rc->trgOps.qualityChange},
+                {"dupd", rc->trgOps.dataUpdate},
+                {"intg", rc->trgOps.integrity},
+                {"gi",   rc->trgOps.generalInterrogation},
+            };
+            j["optFields"] = {
+                {"seqNum", rc->optFields.seqNum},
+                {"timeStamp", rc->optFields.timeStamp},
+                {"reasonForInclusion", rc->optFields.reasonForInclusion},
+                {"dataSet", rc->optFields.dataSet},
+                {"confRev", rc->optFields.confRev},
+                {"entryID", rc->optFields.entryID},
+                {"bufOvfl", rc->optFields.bufOvfl},
+                {"configRef", rc->optFields.configRef},
+                {"subSeqNum", rc->optFields.subSeqNum},
+            };
+            root["rcb"].push_back(std::move(j));
+        }
+    }
+
     return root.dump();
+}
+
+std::string SclManager::ldInstOf(const IED& ied, const ReportControlMeta* rc) const {
+    // Find the LDevice that owns this control block. rptCtrls_ is keyed by
+    // ied|ld|rcbName, so scan the two possible containers.
+    for (const auto& ld : ied.ldevices)
+        for (const auto& cand : ld.ln0.rptCtrls)
+            if (&cand == rc) return ld.inst;
+    for (const auto& ap : ied.accessPoints)
+        for (const auto& ld : ap.ldevices)
+            for (const auto& cand : ld.ln0.rptCtrls)
+                if (&cand == rc) return ld.inst;
+    return {};
 }
 
 

@@ -121,6 +121,49 @@ struct SmvControlMeta {
     std::string smpRate; // optionnel (via P dans Address réseau, sinon logger)
 };
 
+// tns:ReportControl. This is what makes a B-report (client) subscription
+// possible, and it is unrelated to GSEControl: the two are separate control
+// blocks declared side by side in LN0.
+struct ReportControlMeta {
+    std::string name;      // @name
+    std::string rptID;     // @rptID, full MMS name, e.g. "MYIEDLD/LLN0$RP$urcbA"
+    std::string datSet;    // @datSet, empty when the DataSet is implicit
+    std::string confRev;   // @confRev
+    std::string desc;      // @desc
+    bool buffered {false}; // @buffered
+    std::string intgPd;    // @intgPd, integrity period in ms
+    // tns:TrgOps bit string. Defaults follow the usual convention of data
+    // change + quality change + GI, since an IED shipped with TrgOps=0 delivers
+    // nothing until an integrity period fires (and IntgPd often defaults to 0).
+    struct TrgOps {
+        bool dataChange {true};
+        bool qualityChange {true};
+        bool dataUpdate {false};
+        bool integrity {false};
+        bool generalInterrogation {true};
+    } trgOps;
+    // tns:OptFields. The SCL names each bit by attribute name (sequenceNumber,
+    // timeStamp, ...) rather than by position, so read them by name.
+    struct OptFields {
+        bool seqNum {false};           // sequenceNumber
+        bool timeStamp {false};        // timeStamp
+        bool dataSet {false};          // dataSet
+        bool reasonForInclusion {false};
+        bool configRef {false};
+        bool bufOvfl {false};
+        bool entryID {false};
+        bool confRev {false};
+        bool subSeqNum {false};
+    } optFields;
+};
+
+// tns:Inputs / tns:ExtRef: a report DataSet may reference data from another IED
+// over GOOSE rather than from the local server.
+struct ExtRefRef {
+    std::string iedName, ldInst, prefix, lnClass, lnInst, doName, daName, fc;
+    std::string intgPd;
+};
+
 // --- LN0 / DataSet / Controls (métadonnées minimales)
 struct FcdaRef {
     std::string ldInst;    // optionnel si scope LN0 implicite
@@ -134,12 +177,14 @@ struct FcdaRef {
 struct DataSet {
     std::string name;
     std::vector<FcdaRef> members;
+    std::vector<ExtRefRef> extRefs;  // <Inputs><ExtRef>, data sourced over GOOSE
 };
 
 struct Ln0Info {
     std::vector<DataSet> datasets;
     std::vector<GseControlMeta> gseCtrls;
     std::vector<SmvControlMeta> smvCtrls;
+    std::vector<ReportControlMeta> rptCtrls; // ReportControl + ReportControlBlock
 };
 
 struct LogicalDevice {
