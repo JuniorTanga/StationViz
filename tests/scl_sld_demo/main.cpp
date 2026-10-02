@@ -182,6 +182,18 @@ int main(int argc, char** argv){
         file_size = fs::file_size(file, ec);
         if (ec) file_size = 0;
 
+        // The large fixtures are gitignored (see .gitignore): they exist only to
+        // prove parse performance on a big SCD and add ~19 MB to the repo. Skip
+        // them cleanly when absent so a fresh clone still passes, and make the
+        // omission visible rather than silently green.
+        if (file_size == 0) {
+            printf("  SKIP %s: %s not present (large fixture, gitignored)\n",
+                   id.c_str(), file.string().c_str());
+            resw.write_row(id, type, "1", "SKIP: fixture absent (gitignored large file)");
+            perf.write_row(id, "", "", now_iso());
+            continue;
+        }
+
         scl::SclManager sm;
 
         // timing: load (parse + index + validate)

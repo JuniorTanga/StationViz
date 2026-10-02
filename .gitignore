@@ -88,3 +88,15 @@ CMakeLists.txt.user*
 
 # StationViz: test scratch
 /test_tmp.scd
+
+# StationViz: large SCD fixtures. These exist only to prove parse performance
+# on a big document (~19 MB total) and are not needed to build or run the app.
+# Restore them locally if you want to run the stress fixtures:
+#   tests/scl_sld_demo/data/SCD_HEAVY_{SMALL,LARGE}.scd
+# The batch runner skips any manifest entry whose file is absent.
+*.scd.large
+/tests/scl_sld_demo/data/SCD_HEAVY_LARGE.scd
+/tests/scl_sld_demo/data/SCD_HEAVY_SMALL.scd
+/tests/scl_sld_demo/data/tmp/heavy_large.scd
+/tests/scl_sld_demo/data/tmp/heavy_small.scd
+/tests/tests_files/station1.scd
