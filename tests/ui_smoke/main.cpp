@@ -49,6 +49,15 @@ int main(int argc, char** argv){
       const QString k = e.value("fromId").toString()+"|"+e.value("toId").toString()+"|"+e.value("kind").toString();
       if(seen.contains(k)) ++dup; else seen.insert(k);
     }
+    if (dup) {
+      QSet<QString> seen2;
+      for(int r=0;r<m;++r){
+        QVariantMap e = edges->get(r);
+        const QString k = e.value("fromId").toString()+"|"+e.value("toId").toString()+"|"+e.value("kind").toString();
+        if (seen2.contains(k)) printf("      DUP %s\n", qPrintable(k));
+        else seen2.insert(k);
+      }
+    }
     ck("edges unique (no double BusSpan)", dup==0, QString("dups=%1").arg(dup));
   }
   auto diags = ctx.property("diagnostics").value<QVariantList>();

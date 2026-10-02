@@ -17,3 +17,7 @@ if(MSVC)
 else()
     target_compile_options(sldLib PRIVATE -Wall -Wextra)
 endif()
+
+if(BUILD_TESTING)
+    add_subdirectory(tests)
+endif()

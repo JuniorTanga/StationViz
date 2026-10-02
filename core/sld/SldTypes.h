@@ -19,6 +19,34 @@ enum class EquipmentKind {
     Unknown, CB, DS, ES, CT, VT, PT, Transformer, Line, Cable, BusbarSection
 };
 
+// Default kind sets. Kept out of HeuristicsConfig because EquipmentKind is
+// declared in SldTypes.h, which includes this header.
+inline void applyDefaultKindSets(HeuristicsConfig& cfg) {
+    if (cfg.seriesPassKinds.empty()) {
+        // A feeder runs bus -> DS -> CB -> DS -> line, so the switchgear in
+        // between is traversed rather than terminated on.
+        cfg.seriesPassKinds = {
+            static_cast<int>(EquipmentKind::DS),
+            static_cast<int>(EquipmentKind::ES),
+            static_cast<int>(EquipmentKind::CB),
+            static_cast<int>(EquipmentKind::BusbarSection),
+        };
+    }
+    if (cfg.endpointKinds.empty()) {
+        // What a feeder delivers to or comes from. Leaving this empty made
+        // isEnd() constant false, so every feeder reported endpointType
+        // "Unknown" and the walk ran straight through a transformer to reach
+        // its far winding.
+        cfg.endpointKinds = {
+            static_cast<int>(EquipmentKind::Line),
+            static_cast<int>(EquipmentKind::Cable),
+            static_cast<int>(EquipmentKind::Transformer),
+            static_cast<int>(EquipmentKind::CT),
+            static_cast<int>(EquipmentKind::VT),
+        };
+    }
+}
+
 inline const char* toString(NodeKind k){
     switch(k){
         case NodeKind::ConnectivityNode: return "ConnectivityNode";

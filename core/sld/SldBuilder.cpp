@@ -16,7 +16,12 @@ static std::string keyAbs(const std::string& ss, const std::string& vl,
 }
 
 SldBuilder::SldBuilder(const scl::SclModel* model, const HeuristicsConfig& cfg)
-    : model_(model), cfg_(cfg) {}
+    : model_(model), cfg_(cfg) {
+    // HeuristicsConfig leaves the kind sets empty and sldConfigDefaults fills
+    // them in, because EquipmentKind is declared after HeuristicsConfig. Before
+    // this, both stayed empty and isPass()/isEnd() were constant false.
+    applyDefaultKindSets(cfg_);
+}
 
 // ---- utils
 std::string SldBuilder::keyVL(const std::string& ss, const std::string& vl){
@@ -38,7 +43,10 @@ std::string SldBuilder::upper(std::string s){
     return s;
 }
 bool SldBuilder::isLikelyBusCN(const std::string& nameOrPath, int degree) const{
-
+    // Restored to the original threshold behaviour. busDegreeThreshold{3} is
+    // overridden by a floor of 4, which is wrong, but "fixing" it promotes
+    // every bay OUT CN to a busbar (substation.scd 3 buses -> 6). Both forms
+    // are noted in docs/PLAN.md section 4.
     const int hardMin = 4;
     const int thr = std::max(cfg_.busDegreeThreshold, hardMin);
     if (degree >= thr) return true;
@@ -175,7 +183,111 @@ scl::Status SldBuilder::buildRaw(BoostGraph& g, Index& idx) const {
         }
     }
 
+    // 3) PowerTransformers.
+    //
+    // tns:PowerTransformer is a direct child of Substation (or of an
+    // Equipment/Container), not a ConductingEquipment, so it never appears in
+    // any bay. It is not wired into the graph above at all, which is why every
+    // fixture with a transformer reported transformers=0. Each winding terminal
+    // is connected to its ConnectivityNode exactly like a bay terminal.
+    for (const auto& ss : model_->substations) {
+        for (const auto& pt : ss.powerTransformers) {
+            VertexProp tv;
+            tv.id    = "TR:" + ss.name + "/" + pt.name;
+            tv.kind  = NodeKind::Equipment;
+            tv.eKind = EquipmentKind::Transformer;
+            tv.label = pt.name;
+            tv.ss = ss.name; tv.vl.clear(); tv.bay.clear();
+            tv.ce = nullptr;              // not a ConductingEquipment
+            const V vTR = ensureVertex(g, idx, tv);
+
+            for (const auto& w : pt.windings) {
+                for (const auto& t : w.terminals) {
+                    std::string cnId;
+                    if (!t.connectivityPath.empty()) {
+                        cnId = "CN:" + t.connectivityPath;
+                        if (!findVertex(idx, cnId)) {
+                            std::vector<std::string> segs;
+                            const std::string& s = t.connectivityPath;
+                            size_t a = 0, b = s.find('/');
+                            while (b != std::string::npos) {
+                                segs.push_back(s.substr(a, b - a));
+                                a = b + 1; b = s.find('/', a);
+                            }
+                            segs.push_back(s.substr(a));
+                            if (segs.size() >= 4) {
+                                VertexProp vp;
+                                vp.id = cnId; vp.kind = NodeKind::ConnectivityNode;
+                                vp.ss = segs[0]; vp.vl = segs[1]; vp.bay = segs[2];
+                                vp.label = segs[3]; vp.cn = nullptr;
+                                ensureVertex(g, idx, vp);
+                            }
+                        }
+                    } else if (!t.cNodeName.empty()) {
+                        // @cNodeName is scoped to the voltage level, not the bay,
+                        // so it cannot be resolved against the current bay.
+                        cnId = findCNByNameInVolLevel(ss.name, pt, t.cNodeName);
+                    } else {
+                        continue;
+                    }
+
+                    const auto vCNopt = findVertex(idx, cnId);
+                    if (!vCNopt) continue;
+                    const V vCN = *vCNopt;
+
+                    // One edge per winding terminal. detectTransformers()
+                    // requires the transformer to reach two distinct buses, so
+                    // a two-winding transformer yields exactly two bus hits.
+                    auto te = boost::add_edge(vTR, vCN, g);
+                    g[te.first].kind = EdgeKind::CE_to_CN;
+                    g[te.first].id = "E:" + tv.id + "/" + w.name + "->" + cnId;
+                    g[te.first].terminalName = t.name;
+                    g[te.first].cnPath =
+                        !t.connectivityPath.empty() ? t.connectivityPath
+                                                   : t.cNodeName;
+                }
+            }
+        }
+    }
+
     return scl::Status::Ok();
+}
+
+std::string SldBuilder::findCNByNameInVolLevel(
+        const std::string& ssName, const scl::PowerTransformer& pt,
+        const std::string& cNodeName) const {
+    // A winding terminal's @cNodeName names a ConnectivityNode in the same
+    // voltage level as the transformer. The winding may live in a different
+    // bay, so searching the current bay (as the previous code did) never
+    // matched. Resolve by resolving the terminal's voltage level first.
+    for (const auto& w : pt.windings) {
+        for (const auto& t : w.terminals) {
+            if (t.cNodeName != cNodeName) continue;
+            if (!t.connectivityPath.empty()) {
+                // "SS/VL/BAY/CN": take the vl segment.
+                std::vector<std::string> segs;
+                const std::string& s = t.connectivityPath;
+                size_t a = 0, b = s.find('/');
+                while (b != std::string::npos) {
+                    segs.push_back(s.substr(a, b - a));
+                    a = b + 1; b = s.find('/', a);
+                }
+                segs.push_back(s.substr(a));
+                if (segs.size() >= 4)
+                    return keyAbs(ssName, segs[1], segs[2], segs.back());
+            }
+        }
+    }
+    // Last resort: a CN with this name anywhere in the substation.
+    for (const auto& ss : model_->substations) {
+        if (ssName != ss.name) continue;
+        for (const auto& vl : ss.vlevels)
+            for (const auto& bay : vl.bays)
+                for (const auto& cn : bay.connectivityNodes)
+                    if (cn.name == cNodeName)
+                        return keyAbs(ss.name, vl.name, bay.name, cn.name);
+    }
+    return {};
 }
 
 SldBuilder::RawAdj SldBuilder::buildAdj(const BoostGraph& raw, const Index& idx) const{
@@ -218,6 +330,23 @@ scl::Status SldBuilder::clusterAndCondense(const BoostGraph& raw, const Index& r
     std::unordered_map<NodeId,int> degree;
     for (const auto& kv : adj.cnToCE) degree[kv.first] = (int)kv.second.size();
 
+    // Busbar detection.
+    //
+    // Left as it was deliberately. The degree + name-hint heuristic cannot
+    // separate a busbar from a bay junction: in SCD_DB_COUPLER, BUSA1 (a
+    // busbar, neighbours = BUS-COUPLER + L1-DS) and L1/IN (a junction,
+    // neighbours = L1-DS + L1-CB) have identical signatures. The only
+    // difference is that the coupler touches a second busbar, which is a
+    // global property.
+    //
+    // Two-pass variants were tried and both regressed: requiring "no breaker on
+    // a bus" drops SCD_DB_COUPLER from 2 buses to 0, because a bus coupler is a
+    // breaker between two busbars. Dropping the hard degree floor of 4 raises
+    // substation.scd from 3 buses to 6 by promoting every bay OUT CN.
+    //
+    // The correct fix is to derive buses from feeder analysis (walk inward from
+    // the line ends and find where feeder chains converge), which is the
+    // topology-first rewrite. See docs/PLAN.md section 4.
     std::unordered_set<NodeId> isBusCN;
     for (auto vIt = vertices(raw); vIt.first != vIt.second; ++vIt.first){
         V v = *vIt.first;

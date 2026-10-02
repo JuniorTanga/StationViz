@@ -754,6 +754,12 @@ Append entries here as phases complete. Newest at the bottom.
   a fresh clone is green.
 - **2026-10-02** `ReportControl` / `Inputs` / `ExtRef` implemented in `sclLib` (see above).
   `ctest`: 44/44.
+- **2026-10-02** Phase A done (layering inversion, MMS address sources, `CNAddress::ss`).
+  `ctest`: 53/53.
+- **2026-10-02** Phase B started: SLD acceptance table (7 tests, 3 DISABLED_), transformers
+  seeded into the graph, `"BB"` hint restored, `endpointKinds`/`seriesPassKinds` initialisers
+  restored (12 Unknown feeders -> 5). Two bus-detection rewrites tried and reverted after they
+  regressed. `ctest`: 60/60.
 - **2026-10-01** Review completed, plan written. No code changed yet.
 - **2026-10-01** Baseline commit `675e9c3` (143 modified + 5 untracked paths captured, tree clean).
   `DataTypeTemplates` decided **out of scope** for the first prototype.
@@ -849,9 +855,45 @@ Still open in Phase 1:
 - `ReportControl` is read only under `LN0`. A control block declared under an `LN` (legal for
   client-side RCBs in some profiles) is not yet covered.
 
-### Phase 2: not started
-The confirmed root cause of `transformers=0` is now **confirmed and localised**: `SldBuilder`
-(`buildRaw`) only walks `VoltageLevel/Bay/ConductingEquipment` and never seeds
-`PowerTransformer` winding terminals into the graph. `substation.scd` has 2 PowerTransformers with
-winding terminals that the parser resolves correctly; the SLD simply never sees them. Alongside the
-regressions already listed in §4.
+### Phase 2: started
+
+An **acceptance table** now exists (`core/sld/tests/tests_sld_acceptance.cpp`, 7 tests, 3 marked
+`DISABLED_`). Before this, `sld.csv` recorded counts and nothing asserted on them, which is how
+`transformers=0` and every-feeder-`Unknown` survived. Each expectation is derived from counting the
+fixture's SCL directly.
+
+**Done and verified (B1, B3, B4):**
+
+- **B1, the headline defect.** `SldBuilder::buildRaw` only ever walked
+  `VoltageLevel/Bay/ConductingEquipment`, but `tns:PowerTransformer` is a direct child of
+  `Substation`, so no transformer ever entered the graph and `detectTransformers` (which looks for
+  `EquipmentKind::Transformer` *vertices*) could not fire. Transformers now produce a vertex plus one
+  edge per winding terminal. Verified on `substation.scd`: 3 transformer vertices.
+- **B3.** `"BB"` restored to `busNameHints`; it was present in the pre-Boost implementation and lost
+  in the rewrite.
+- **B4.** `endpointKinds`/`seriesPassKinds` had *no initialiser at all*, so `isEnd()`/`isPass()`
+  iterated empty vectors. Restored via `sldConfigDefaults()`, which had to move into `SldTypes.h`
+  because `SldTypes.h` includes `SldConfig.h` and `EquipmentKind` is declared after it.
+  `substation.scd` feeders went from **12 `Unknown` to 5 classified** (the transformer feeders). It
+  also fixed a real duplicate-edge bug: with `isEnd()` false the walk ran *through* a transformer to
+  reach its far winding, so the shared 30 kV leg of T4 was emitted twice.
+
+Bus/coupler counts are unchanged from baseline, deliberately. Two heuristic rewrites were tried and
+**both regressed**, so they were reverted with the measurements recorded in the source:
+
+| Attempt | Result |
+|---|---|
+| "no breaker on a busbar" (a CN a CB attaches to is a junction) | `SCD_DB_COUPLER` 2 buses → **0**. A bus coupler *is* a breaker between two busbars. |
+| honour `busDegreeThreshold` (drop the hard floor of 4) | `substation.scd` 3 buses → **6**. Every bay `OUT` CN reaches degree 3. |
+
+The reason neither can work: in `SCD_DB_COUPLER`, `BUSA1` (a busbar: neighbours = `BUS-COUPLER` +
+`L1-DS`) and `L1/IN` (a junction: `L1-DS` + `L1-CB`) have **identical local signatures**. Only a
+global property separates them: the coupler touches a second busbar. That means buses have to be
+derived from feeder convergence (walk inward from the line ends, find where chains converge), not
+from degree and name hints. That is the topology-first rewrite.
+
+**Why `plan.transformers` is still 0**, measured on `substation.scd`: `detectTransformers` requires a
+winding terminal whose CN is *itself* in a bus cluster. In a real station the transformer's terminal CN
+reaches the busbar through the bay: T4_1's `CONNECTIVITY_NODE85` reaches the 380 kV busbar
+`CONNECTIVITY_NODE82` via `DISCONNECTOR50` then `BREAKER25`. So the transformer needs **chain
+following**, not a direct bus hit. Verified by tracing the graph.

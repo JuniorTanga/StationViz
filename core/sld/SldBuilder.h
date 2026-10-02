@@ -62,6 +62,13 @@ private:
     static std::string upper(std::string s);
     bool isLikelyBusCN(const std::string& nameOrPath, int degree) const;
 
+    // A transformer winding terminal carries @cNodeName, which IEC 61850-6
+    // scopes to the voltage level rather than the bay. Resolves that name to
+    // the absolute CN key, searching the winding's own voltage level.
+    std::string findCNByNameInVolLevel(const std::string& ssName,
+                                       const scl::PowerTransformer& pt,
+                                       const std::string& cNodeName) const;
+
     // create/find vertex by NodeId in a graph/index
     static V ensureVertex(BoostGraph& g, Index& idx, const VertexProp& vp);
     static std::optional<V> findVertex(const Index& idx, const NodeId& id);
