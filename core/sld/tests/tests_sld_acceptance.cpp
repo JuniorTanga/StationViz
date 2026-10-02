@@ -9,7 +9,9 @@
 // A fixture listed as "skipped" is gitignored (large), so the test skips rather
 // than fails when it is absent.
 #include <gtest/gtest.h>
+#include <algorithm>
 #include <filesystem>
+#include <map>
 
 #include "SldTypes.h"
 
@@ -220,3 +222,50 @@ TEST(SldAcceptance, IsDeterministicAcrossRuns) {
 }
 
 } // namespace
+// ============================================================================
+// Why bus detection is not a local predicate.
+//
+// This is not a defect test; it documents a measured constraint that four
+// candidate implementations violated. If someone changes bus detection again,
+// this is the fixture that shows why the obvious approaches fail.
+// ============================================================================
+TEST(SldAcceptance, BusbarAndBayJunctionHaveIdenticalLocalSignatures) {
+    const std::string p = fixture("SCD_DB_COUPLER.scd");
+    if (!std::filesystem::exists(p)) GTEST_SKIP() << "fixture absent";
+    scl::SclManager sm;
+    ASSERT_TRUE(static_cast<bool>(sm.loadScl(p)));
+    sld::SldManager m(&sm);
+    ASSERT_TRUE(static_cast<bool>(m.build()));
+
+    // Neighbour signature per CN: the multiset of attached equipment kinds.
+    std::map<std::string, std::string> sig;
+    const auto& g = m.raw();
+    for (auto vit = boost::vertices(g); vit.first != vit.second; ++vit.first) {
+        const sld::V v = *vit.first;
+        const auto& pv = g[v];
+        if (pv.kind != sld::NodeKind::ConnectivityNode) continue;
+        std::vector<std::string> kinds;
+        auto o = boost::out_edges(v, g);
+        for (auto e = o.first; e != o.second; ++e) {
+            const auto& t = g[boost::target(*e, g)];
+            if (t.kind != sld::NodeKind::Equipment) continue;
+            kinds.push_back(sld::toString(t.eKind));
+        }
+        std::sort(kinds.begin(), kinds.end());
+        std::string joined;
+        for (const auto& k : kinds) { joined += k; joined += "+"; }
+        sig[pv.label] = joined;
+    }
+
+    // BUSA1 is a busbar. L1/IN is a bay junction. Both attach exactly one
+    // disconnector and one breaker, so degree, naming and attached-kind counts
+    // cannot tell them apart. Only the far end of the breaker differs:
+    // BUS-COUPLER reaches another busbar, L1-CB reaches a bay.
+    std::string all;
+    for (const auto& [name, kinds] : sig) { all += name + "=" + kinds + "  "; }
+    ASSERT_NE(sig.count("BUSA1"), 0u) << all;
+    ASSERT_NE(sig.count("IN"), 0u) << all;
+    EXPECT_EQ(sig["BUSA1"], sig["IN"])
+        << "if these ever differ, a local predicate could work and bus "
+           "detection no longer needs the topology-first rewrite";
+}

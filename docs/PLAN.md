@@ -756,10 +756,10 @@ Append entries here as phases complete. Newest at the bottom.
   `ctest`: 44/44.
 - **2026-10-02** Phase A done (layering inversion, MMS address sources, `CNAddress::ss`).
   `ctest`: 53/53.
-- **2026-10-02** Phase B started: SLD acceptance table (7 tests, 3 DISABLED_), transformers
-  seeded into the graph, `"BB"` hint restored, `endpointKinds`/`seriesPassKinds` initialisers
-  restored (12 Unknown feeders -> 5). Two bus-detection rewrites tried and reverted after they
-  regressed. `ctest`: 60/60.
+- **2026-10-02** Phase B: SLD acceptance table (8 tests, 3 DISABLED_), transformers seeded into the
+  graph, `"BB"` hint restored, `endpointKinds`/`seriesPassKinds` initialisers restored (12 Unknown
+  feeders -> 5, and a duplicate-edge bug fixed). Four bus-detection rewrites built and measured, all
+  reverted; the blocker is now an executable test. `ctest`: 61/61.
 - **2026-10-01** Review completed, plan written. No code changed yet.
 - **2026-10-01** Baseline commit `675e9c3` (143 modified + 5 untracked paths captured, tree clean).
   `DataTypeTemplates` decided **out of scope** for the first prototype.
@@ -878,19 +878,32 @@ fixture's SCL directly.
   also fixed a real duplicate-edge bug: with `isEnd()` false the walk ran *through* a transformer to
   reach its far winding, so the shared 30 kV leg of T4 was emitted twice.
 
-Bus/coupler counts are unchanged from baseline, deliberately. Two heuristic rewrites were tried and
-**both regressed**, so they were reverted with the measurements recorded in the source:
+Bus detection is **unchanged**, and that is a decision, not an omission. Four replacements were
+built and measured. All four regressed, and the reason turned out to be structural:
 
 | Attempt | Result |
 |---|---|
 | "no breaker on a busbar" (a CN a CB attaches to is a junction) | `SCD_DB_COUPLER` 2 buses → **0**. A bus coupler *is* a breaker between two busbars. |
-| honour `busDegreeThreshold` (drop the hard floor of 4) | `substation.scd` 3 buses → **6**. Every bay `OUT` CN reaches degree 3. |
+| honour `busDegreeThreshold`, dropping the hard floor of 4 | `substation.scd` 3 buses → **6**. Every bay `OUT` CN reaches degree 3. |
+| iterative Tarjan articulation points whose removal separates terminal-bearing pieces (O(V+E), implemented, ~150 lines) | `substation.scd` 3 → **17**. A substation is a *tree*: every CN of degree ≥ 2 separates two terminal groups, so the criterion accepts every bay junction. |
+| DS/BusbarSection union-find (breakers are the only bus interrupt) | merges the bay's `IN` CN into the bus, because the bus-side DS connects them. |
 
-The reason neither can work: in `SCD_DB_COUPLER`, `BUSA1` (a busbar: neighbours = `BUS-COUPLER` +
-`L1-DS`) and `L1/IN` (a junction: `L1-DS` + `L1-CB`) have **identical local signatures**. Only a
-global property separates them: the coupler touches a second busbar. That means buses have to be
-derived from feeder convergence (walk inward from the line ends, find where chains converge), not
-from degree and name hints. That is the topology-first rewrite.
+**The blocker, measured not guessed.** In `SCD_DB_COUPLER`:
+
+```
+BUSA1  deg=2  [CB, DS]   <- a busbar
+L1/IN  deg=2  [CB, DS]   <- a bay junction
+```
+
+Identical degree, identical attached-kind multiset, both switching equipment. Only the far end of
+the breaker differs: `BUS-COUPLER` reaches another busbar, `L1-CB` reaches a bay. **No local
+predicate over a CN's neighbourhood can separate these.** This is now an executable test
+(`SldAcceptance.BusbarAndBayJunctionHaveIdenticalLocalSignatures`), so if a future change ever makes
+the signatures differ, the test fails and bus detection can be revisited locally. Until then the
+constraint is recorded rather than rediscovered.
+
+The fix is to derive feeders first, from the line ends inward, and take the bus to be where feeder
+chains converge. That is the remaining Phase B work.
 
 **Why `plan.transformers` is still 0**, measured on `substation.scd`: `detectTransformers` requires a
 winding terminal whose CN is *itself* in a bus cluster. In a real station the transformer's terminal CN

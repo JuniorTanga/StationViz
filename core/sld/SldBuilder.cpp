@@ -332,21 +332,33 @@ scl::Status SldBuilder::clusterAndCondense(const BoostGraph& raw, const Index& r
 
     // Busbar detection.
     //
-    // Left as it was deliberately. The degree + name-hint heuristic cannot
-    // separate a busbar from a bay junction: in SCD_DB_COUPLER, BUSA1 (a
-    // busbar, neighbours = BUS-COUPLER + L1-DS) and L1/IN (a junction,
-    // neighbours = L1-DS + L1-CB) have identical signatures. The only
-    // difference is that the coupler touches a second busbar, which is a
-    // global property.
+    // Left as the original degree + name-hint heuristic, deliberately. Four
+    // replacements were built and measured; all regressed, and the reason is
+    // structural rather than a matter of tuning:
     //
-    // Two-pass variants were tried and both regressed: requiring "no breaker on
-    // a bus" drops SCD_DB_COUPLER from 2 buses to 0, because a bus coupler is a
-    // breaker between two busbars. Dropping the hard degree floor of 4 raises
-    // substation.scd from 3 buses to 6 by promoting every bay OUT CN.
+    //  1. "no breaker on a busbar" (a CN a CB attaches to is a junction)
+    //     -> SCD_DB_COUPLER 2 buses -> 0, because a bus coupler *is* a breaker
+    //     between two busbars.
+    //  2. honour busDegreeThreshold, dropping the hard floor of 4
+    //     -> substation.scd 3 buses -> 6; every bay OUT CN reaches degree 3.
+    //  3. articulation points whose removal separates terminal-bearing pieces
+    //     -> substation.scd 3 -> 17. A substation is a tree: every CN of
+    //     degree >= 2 separates two terminal groups, so the criterion accepts
+    //     every bay junction.
+    //  4. DS/BusbarSection union-find (breakers are the only bus interrupt)
+    //     -> merges the bay's IN CN into the bus, since the bus-side DS
+    //     connects them.
     //
-    // The correct fix is to derive buses from feeder analysis (walk inward from
-    // the line ends and find where feeder chains converge), which is the
-    // topology-first rewrite. See docs/PLAN.md section 4.
+    // The blocker is that in SCD_DB_COUPLER, BUSA1 (a busbar: neighbours
+    // BUS-COUPLER + L1-DS, both switching) and L1/IN (a junction: L1-DS +
+    // L1-CB, also both switching) have *identical* neighbour signatures. Only a
+    // global fact separates them: BUS-COUPLER's far end is another busbar,
+    // while L1-CB's far end is a bay junction. No local predicate can decide
+    // this.
+    //
+    // The fix is to derive feeders first, from the line ends inward, and take
+    // the bus to be where feeder chains converge. That is the remaining Phase B
+    // work; see docs/PLAN.md section 4.
     std::unordered_set<NodeId> isBusCN;
     for (auto vIt = vertices(raw); vIt.first != vIt.second; ++vIt.first){
         V v = *vIt.first;

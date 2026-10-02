@@ -78,6 +78,7 @@ private:
         std::unordered_map<NodeId, std::vector<NodeId>> cnToCE;
         std::unordered_map<NodeId, std::vector<NodeId>> ceToCN;
     };
+
     RawAdj buildAdj(const BoostGraph& raw, const Index& idx) const;
 };
 
