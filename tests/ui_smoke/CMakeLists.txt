@@ -21,6 +21,11 @@ foreach(_dir ${STATIONVIZ_SMOKE_FIXTURES})
 endforeach()
 
 foreach(_scd ${_smoke_cases})
+    # Only register fixtures that are actually present. The large SCDs are
+    # gitignored (see .gitignore), so they exist locally but not in a clone.
+    if(NOT EXISTS ${_scd})
+        continue()
+    endif()
     get_filename_component(_name ${_scd} NAME_WE)
     add_test(NAME ui_smoke.${_name} COMMAND ui_smoke ${_scd})
     set_tests_properties(ui_smoke.${_name} PROPERTIES
