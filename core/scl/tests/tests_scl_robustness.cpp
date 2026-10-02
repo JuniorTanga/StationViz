@@ -512,3 +512,230 @@ TEST(SclReportControl, RcbReferencePrefersSclRptId) {
     rc.rptID = "IED1LD1/LLN0$RP$urcbA";
     EXPECT_EQ(SclManager::rcbReference("LD1", rc), "IED1LD1/LLN0$RP$urcbA");
 }
+
+// ============================================================================
+// Layering: LN0 control blocks are the source of truth, Communication only
+// supplies the address.
+//
+// The previous implementation iterated Communication and looked LN0 up, so an
+// SCD with control blocks but no <Communication> block produced zero endpoints
+// and no diagnostic at all: a silently wrong answer on a routine file.
+// ============================================================================
+
+TEST(SclLayering, ControlBlocksExistWithoutCommunication) {
+    const std::string xml = kHeader +
+        "<SCL version=\"2007\" revision=\"B\"><IED name=\"IED1\">"
+        "<AccessPoint name=\"AP1\"><Server><LDevice inst=\"LD1\">"
+        "<LN0 lnClass=\"LLN0\">"
+        "<DataSet name=\"DS1\"><FCDA ldInst=\"LD1\" prefix=\"\" lnClass=\"GGIO\" lnInst=\"1\" doName=\"Ind1\" fc=\"ST\"/></DataSet>"
+        "<GSEControl name=\"GoCB01\" datSet=\"DS1\" appID=\"1001\"/>"
+        "<SampledValueControl name=\"SvCB01\" datSet=\"DS1\"/>"
+        "</LN0></LDevice></Server></AccessPoint></IED></SCL>\n";
+
+    SclManager mgr;
+    ASSERT_TRUE(mgr.loadSclString(xml));
+
+    ASSERT_EQ(mgr.gseEndpoints().size(), 1u)
+        << "an LN0 GSEControl must produce an endpoint even with no <Communication>";
+    const auto& g = mgr.gseEndpoints().begin()->second;
+    EXPECT_EQ(g.iedName, "IED1");
+    EXPECT_EQ(g.ldInst, "LD1");
+    EXPECT_EQ(g.cbName, "GoCB01");
+    EXPECT_EQ(g.datasetRef, "DS1");
+    EXPECT_EQ(g.appid, "1001");
+    EXPECT_FALSE(g.addressDeclared)
+        << "addressDeclared must be false when no Communication mapping exists";
+    EXPECT_TRUE(g.mac.empty());
+
+    ASSERT_EQ(mgr.svEndpoints().size(), 1u);
+    EXPECT_FALSE(mgr.svEndpoints().begin()->second.addressDeclared);
+}
+
+TEST(SclLayering, CommunicationJoinsOntoExistingControlBlocks) {
+    const std::string xml = kHeader +
+        "<SCL version=\"2007\" revision=\"B\"><IED name=\"IED1\">"
+        "<AccessPoint name=\"AP1\"><Server><LDevice inst=\"LD1\">"
+        "<LN0 lnClass=\"LLN0\">"
+        "<DataSet name=\"DS1\"><FCDA ldInst=\"LD1\" prefix=\"\" lnClass=\"GGIO\" lnInst=\"1\" doName=\"Ind1\" fc=\"ST\"/></DataSet>"
+        "<GSEControl name=\"GoCB01\" datSet=\"DS1\" appID=\"0001\"/>"
+        "</LN0></LDevice></Server></AccessPoint></IED>"
+        "<Communication><SubNetwork name=\"SN1\" type=\"8-MMS\">"
+        "<ConnectedAP iedName=\"IED1\" apName=\"AP1\">"
+        "<GSE ldInst=\"LD1\" cbName=\"GoCB01\"><Address>"
+        "<P type=\"MAC-Address\">01-0C-CD-01-00-01</P><P type=\"APPID\">0001</P>"
+        "</Address></GSE>"
+        "</ConnectedAP></SubNetwork></Communication></SCL>\n";
+
+    SclManager mgr;
+    ASSERT_TRUE(mgr.loadSclString(xml));
+    ASSERT_EQ(mgr.gseEndpoints().size(), 1u);
+    const auto& g = mgr.gseEndpoints().begin()->second;
+    EXPECT_TRUE(g.addressDeclared);
+    EXPECT_EQ(g.mac, "01-0C-CD-01-00-01");
+    EXPECT_EQ(g.subNetwork, "SN1");
+    EXPECT_FALSE(mgr.hasWarnings()) << "matching APPIDs must not warn";
+}
+
+TEST(SclLayering, CommunicationWithoutControlBlockIsDiagnosed) {
+    // The reverse direction: Communication declares a GSE for a control block
+    // the IED does not have. Previously silent.
+    const std::string xml = kHeader +
+        "<SCL version=\"2007\" revision=\"B\"><IED name=\"IED1\">"
+        "<AccessPoint name=\"AP1\"><Server><LDevice inst=\"LD1\">"
+        "<LN0 lnClass=\"LLN0\"/></LDevice></Server></AccessPoint></IED>"
+        "<Communication><SubNetwork name=\"SN1\" type=\"8-MMS\">"
+        "<ConnectedAP iedName=\"IED1\" apName=\"AP1\">"
+        "<GSE ldInst=\"LD1\" cbName=\"Ghost\"><Address>"
+        "<P type=\"MAC-Address\">01-0C-CD-01-00-02</P></Address></GSE>"
+        "<SMV ldInst=\"LD1\" cbName=\"Ghost\"><Address>"
+        "<P type=\"MAC-Address\">01-0C-CD-01-00-03</P></Address></SMV>"
+        "</ConnectedAP></SubNetwork></Communication></SCL>\n";
+
+    SclManager mgr;
+    ASSERT_TRUE(mgr.loadSclString(xml));
+    int ctrlNotFound = 0;
+    for (const auto& d : mgr.diagnostics())
+        if (d.code == ErrorCode::ControlBlockNotFound) ++ctrlNotFound;
+    EXPECT_GE(ctrlNotFound, 2)
+        << "a Communication GSE/SMV with no matching control block must be diagnosed";
+}
+
+TEST(SclLayering, ControlBlockAppIdWinsAndConflictIsWarned) {
+    // LN0/@appID is authoritative (IEC 61850-7-4). A conflicting Communication
+    // APPID is an interoperability hazard, because incoming GOOSE is filtered
+    // by APPID: picking the wrong one silently loses every frame.
+    const std::string xml = kHeader +
+        "<SCL version=\"2007\" revision=\"B\"><IED name=\"IED1\">"
+        "<AccessPoint name=\"AP1\"><Server><LDevice inst=\"LD1\">"
+        "<LN0 lnClass=\"LLN0\">"
+        "<DataSet name=\"DS1\"><FCDA ldInst=\"LD1\" prefix=\"\" lnClass=\"GGIO\" lnInst=\"1\" doName=\"Ind1\" fc=\"ST\"/></DataSet>"
+        "<GSEControl name=\"GoCB01\" datSet=\"DS1\" appID=\"1001\"/>"
+        "</LN0></LDevice></Server></AccessPoint></IED>"
+        "<Communication><SubNetwork name=\"SN1\" type=\"8-MMS\">"
+        "<ConnectedAP iedName=\"IED1\" apName=\"AP1\">"
+        "<GSE ldInst=\"LD1\" cbName=\"GoCB01\"><Address>"
+        "<P type=\"APPID\">2002</P><P type=\"MAC-Address\">01-0C-CD-01-00-01</P>"
+        "</Address></GSE></ConnectedAP></SubNetwork></Communication></SCL>\n";
+
+    SclManager mgr;
+    ASSERT_TRUE(mgr.loadSclString(xml));
+    ASSERT_EQ(mgr.gseEndpoints().size(), 1u);
+    EXPECT_EQ(mgr.gseEndpoints().begin()->second.appid, "1001")
+        << "LN0/@appID must win over the Communication APPID";
+    bool warned = false;
+    for (const auto& d : mgr.diagnostics())
+        if (d.code == ErrorCode::AppIdMismatch &&
+            d.severity == SclManager::Severity::Warning) warned = true;
+    EXPECT_TRUE(warned) << "the conflict itself must be reported";
+    EXPECT_FALSE(mgr.hasErrors()) << "a conflict is a warning, not a hard failure";
+}
+
+// --- MMS endpoints from three address sources ------------------------------
+
+TEST(SclLayering, MmsEndpointFromAccessPointAddress) {
+    // No <Communication> at all: the IP is declared on the AccessPoint, which
+    // the previous implementation ignored entirely.
+    const std::string xml = kHeader +
+        "<SCL version=\"2007\" revision=\"B\"><IED name=\"IED1\">"
+        "<AccessPoint name=\"AP1\"><Address>"
+        "<P type=\"IP\">10.0.0.7</P><P type=\"Port\">102</P>"
+        "</Address><Server><LDevice inst=\"LD1\"><LN0 lnClass=\"LLN0\"/></LDevice></Server>"
+        "</AccessPoint></IED></SCL>\n";
+
+    SclManager mgr;
+    ASSERT_TRUE(mgr.loadSclString(xml));
+    const auto& mms = mgr.mmsEndpoints();
+    ASSERT_EQ(mms.size(), 1u);
+    const auto it = mms.find("IED1|AP1");
+    ASSERT_NE(it, mms.end());
+    EXPECT_EQ(it->second.ip, "10.0.0.7");
+    EXPECT_EQ(it->second.port, "102");
+    EXPECT_EQ(it->second.addressSource, MmsEndpoint::AddressSource::AccessPoint);
+}
+
+TEST(SclLayering, MmsEndpointFromServerAddress) {
+    const std::string xml = kHeader +
+        "<SCL version=\"2007\" revision=\"B\"><IED name=\"IED1\">"
+        "<AccessPoint name=\"AP1\"><Server><Address>"
+        "<P type=\"IP\">10.0.0.8</P><P type=\"Port\">105</P>"
+        "</Address><LDevice inst=\"LD1\"><LN0 lnClass=\"LLN0\"/></LDevice></Server>"
+        "</AccessPoint></IED></SCL>\n";
+
+    SclManager mgr;
+    ASSERT_TRUE(mgr.loadSclString(xml));
+    const auto& mms = mgr.mmsEndpoints();
+    ASSERT_EQ(mms.size(), 1u);
+    const auto it = mms.find("IED1|AP1#0");
+    ASSERT_NE(it, mms.end()) << "a Server address must yield its own endpoint";
+    EXPECT_EQ(it->second.ip, "10.0.0.8");
+    EXPECT_EQ(it->second.port, "105");
+    EXPECT_EQ(it->second.addressSource, MmsEndpoint::AddressSource::Server);
+}
+
+TEST(SclLayering, ConnectedApOverridesAccessPointAddress) {
+    const std::string xml = kHeader +
+        "<SCL version=\"2007\" revision=\"B\"><IED name=\"IED1\">"
+        "<AccessPoint name=\"AP1\"><Address><P type=\"IP\">10.0.0.9</P></Address>"
+        "<Server><LDevice inst=\"LD1\"><LN0 lnClass=\"LLN0\"/></LDevice></Server>"
+        "</AccessPoint></IED>"
+        "<Communication><SubNetwork name=\"SN1\" type=\"8-MMS\">"
+        "<ConnectedAP iedName=\"IED1\" apName=\"AP1\">"
+        "<Address><P type=\"IP\">10.0.0.1</P><P type=\"Port\">102</P></Address>"
+        "</ConnectedAP></SubNetwork></Communication></SCL>\n";
+
+    SclManager mgr;
+    ASSERT_TRUE(mgr.loadSclString(xml));
+    const auto& mms = mgr.mmsEndpoints();
+    ASSERT_EQ(mms.size(), 1u);
+    const auto it = mms.find("IED1|AP1");
+    ASSERT_NE(it, mms.end());
+    EXPECT_EQ(it->second.ip, "10.0.0.1")
+        << "the Communication address is the effective one";
+    EXPECT_EQ(it->second.addressSource, MmsEndpoint::AddressSource::ConnectedAP);
+    EXPECT_EQ(it->second.subNetwork, "SN1");
+}
+
+TEST(SclLayering, ConnectedApWithoutApNameDoesNotProduceUnusableKey) {
+    // A ConnectedAP with no @apName previously produced the key "IED1|", which
+    // no lookup could ever match, so the endpoint was unreachable.
+    const std::string xml = kHeader +
+        "<SCL version=\"2007\" revision=\"B\"><IED name=\"IED1\">"
+        "<AccessPoint name=\"AP1\"><Server><LDevice inst=\"LD1\"><LN0 lnClass=\"LLN0\"/></LDevice></Server>"
+        "</AccessPoint></IED>"
+        "<Communication><SubNetwork name=\"SN1\" type=\"8-MMS\">"
+        "<ConnectedAP iedName=\"IED1\"><Address><P type=\"IP\">10.0.0.1</P></Address>"
+        "</ConnectedAP></SubNetwork></Communication></SCL>\n";
+
+    SclManager mgr;
+    ASSERT_TRUE(mgr.loadSclString(xml));
+    const auto& mms = mgr.mmsEndpoints();
+    EXPECT_EQ(mms.count("IED1|"), 0u)
+        << "the unusable key \"IED1|\" must not be produced";
+    EXPECT_EQ(mms.count("IED1|AP1"), 1u)
+        << "with a single AccessPoint the name is unambiguous and must be used";
+}
+
+TEST(SclLayering, ConnectivityPathCarriesSubstationName) {
+    // parseConnectivityPath left ss empty, so every ResolvedEnd::ss defaulted
+    // to the containing substation and cross-substation references broke.
+    const std::string xml = kHeader +
+        "<SCL version=\"2007\" revision=\"B\"><Substation name=\"SS1\">"
+        "<VoltageLevel name=\"VL1\"><Bay name=\"B1\">"
+        "<ConnectivityNode name=\"C1\" pathName=\"SS1/VL1/B1/C1\"/>"
+        "<ConductingEquipment type=\"CBR\" name=\"CB1\">"
+        "<Terminal name=\"t\" connectivityNode=\"SS1/VL1/B1/C1\"/></ConductingEquipment>"
+        "</Bay></VoltageLevel>"
+        "<PowerTransformer name=\"T1\"><TransformerWinding name=\"W\" type=\"PTW\">"
+        "<Terminal name=\"t\" connectivityNode=\"SS1/VL1/B1/C1\"/>"
+        "</TransformerWinding></PowerTransformer>"
+        "</Substation></SCL>\n";
+
+    SclManager mgr;
+    ASSERT_TRUE(mgr.loadSclString(xml));
+    const auto& w = mgr.model()->substations[0].powerTransformers[0].windings[0];
+    ASSERT_EQ(w.resolvedEnds.size(), 1u);
+    EXPECT_EQ(w.resolvedEnds[0].ss, "SS1")
+        << "the substation segment of the path must be parsed";
+    EXPECT_EQ(w.resolvedEnds[0].vl, "VL1");
+    EXPECT_EQ(w.resolvedEnds[0].cn, "C1");
+}

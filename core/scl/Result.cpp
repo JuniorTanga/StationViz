@@ -20,6 +20,7 @@ const char* to_string(ErrorCode c) {
         case ErrorCode::DuplicateConnectivityNode:return "DuplicateConnectivityNode";
         case ErrorCode::DuplicateDataSetName:     return "DuplicateDataSetName";
         case ErrorCode::MissingSmpRate:           return "MissingSmpRate";
+        case ErrorCode::AppIdMismatch:            return "AppIdMismatch";
     }
     return "Unknown";
 }

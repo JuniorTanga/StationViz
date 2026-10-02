@@ -312,6 +312,46 @@ void SclManager::validate_() {
                     });
                 }
             }
+
+            // A Communication entry for a control block the IED does not
+            // declare. Endpoints are now built from LN0, so nothing else would
+            // notice this and the address mapping would be silently ignored.
+            // tri-state: nullopt = do not report (LD missing, already reported
+            // as InvalidLdRef), true = control block present.
+            auto hasCb = [&](const std::string& ldInst, const std::string& cbName)
+                            -> std::optional<bool> {
+                const LogicalDevice* ld = findLD_(ied, ldInst);
+                if (!ld) return std::nullopt;
+                for (const auto& g : ld->ln0.gseCtrls) if (g.name == cbName) return true;
+                for (const auto& s : ld->ln0.smvCtrls) if (s.name == cbName) return true;
+                return false;
+            };
+            for (const auto& g : cap.gses) {
+                if (hasCb(g.ldInst, g.cbName) == false) {
+                    diags_.push_back({
+                        ErrorCode::ControlBlockNotFound,
+                        "ConnectedAP.GSE",
+                        "GSE sans GSEControl correspondant: " + g.cbName
+                            + " sur " + cap.iedName + "/" + g.ldInst,
+                        "Déclarez <GSEControl name=\"" + g.cbName
+                            + "\"> sous LN0, ou retirez le GSE côté Communication",
+                        Severity::Error
+                    });
+                }
+            }
+            for (const auto& v : cap.smvs) {
+                if (hasCb(v.ldInst, v.cbName) == false) {
+                    diags_.push_back({
+                        ErrorCode::ControlBlockNotFound,
+                        "ConnectedAP.SMV",
+                        "SMV sans SampledValueControl correspondant: " + v.cbName
+                            + " sur " + cap.iedName + "/" + v.ldInst,
+                        "Déclarez <SampledValueControl name=\"" + v.cbName
+                            + "\"> sous LN0, ou retirez le SMV côté Communication",
+                        Severity::Error
+                    });
+                }
+            }
         }
     }
 }
@@ -438,72 +478,184 @@ void SclManager::buildIndexes_() {
         }
     }
 
-    // --- Endpoints MMS (ConnectedAP Address)
-    for (const auto& sn : model_->communication.subNetworks) {
-        for (const auto& cap : sn.connectedAPs) {
+    // --- Endpoints MMS.
+    //
+    // An AccessPoint address is a declaration in the IED; a ConnectedAP address
+    // is the Address actually used on the wire. The previous code read only
+    // ConnectedAP, so an SCD that carried the IP under AccessPoint/Address (or
+    // Server/Address, which vendor tools emit freely) yielded no endpoint, and
+    // a ConnectedAP with no @apName produced the unusable key "IED1|".
+    auto ipOf = [](const std::unordered_map<std::string,std::string>& a)->std::string {
+        auto it = a.find("IP"); return it==a.end()? "" : it->second;
+    };
+    auto portOf = [](const std::unordered_map<std::string,std::string>& a)->std::string {
+        auto it = a.find("Port");
+        return (it != a.end() && !it->second.empty()) ? it->second : "102";
+    };
+
+    // IED side first, so the declaration exists even without Communication.
+    for (const auto& ied : model_->ieds) {
+        for (const auto& ap : ied.accessPoints) {
             MmsEndpoint me{};
-            me.iedName = cap.iedName; me.apName = cap.apName;
-            auto it_ip = cap.address.find("IP");
-            if (it_ip != cap.address.end()) me.ip = it_ip->second;
-            auto it_pt = cap.address.find("Port");
-            me.port = (it_pt != cap.address.end()) ? it_pt->second : "102";
-            if (!me.ip.empty()) {
-                mmsEndpoints_[keyMms(me.iedName, me.apName)] = std::move(me);
+            me.iedName = ied.name;
+            me.apName  = ap.name;
+            me.ip      = ipOf(ap.address);
+            me.port    = portOf(ap.address);
+            me.addressSource = MmsEndpoint::AddressSource::AccessPoint;
+            if (!me.ip.empty())
+                mmsEndpoints_[keyMms(me.iedName, me.apName)] = me;
+
+            for (std::size_t i = 0; i < ap.serverAddresses.size(); ++i) {
+                const auto& sa = ap.serverAddresses[i];
+                const std::string ip = ipOf(sa);
+                if (ip.empty()) continue;
+                MmsEndpoint se{};
+                se.iedName = ied.name;
+                se.apName  = ap.name;
+                se.ip      = ip;
+                se.port    = portOf(sa);
+                se.serverName = std::to_string(i);
+                se.addressSource = MmsEndpoint::AddressSource::Server;
+                mmsEndpoints_[keyMms(se.iedName, se.apName + "#" + se.serverName)] = se;
             }
         }
     }
 
-    // --- Endpoints GSE/SMV (ConnectedAP + LN0 ControlBlocks -> DataSet ref)
-    auto findLD = [&](const std::string& iedName, const std::string& ldInst)->const LogicalDevice* {
-        auto it = iedByName_.find(iedName);
-        if (it == iedByName_.end()) return nullptr;
-        return findLD_(*it->second, ldInst);
-    };
-    auto getP = [](const std::unordered_map<std::string,std::string>& a, const char* k)->std::string{
+    // Communication side overrides: it is the effective configuration.
+    for (const auto& sn : model_->communication.subNetworks) {
+        for (const auto& cap : sn.connectedAPs) {
+            MmsEndpoint me{};
+            me.iedName = cap.iedName;
+            // An absent @apName must not produce the key "IED1|", which no
+            // lookup can match. Fall back to the IED's only AccessPoint when
+            // there is exactly one, otherwise keep the empty name visible.
+            me.apName  = cap.apName;
+            if (me.apName.empty()) {
+                auto it = iedByName_.find(cap.iedName);
+                if (it != iedByName_.end() && it->second->accessPoints.size() == 1)
+                    me.apName = it->second->accessPoints.front().name;
+            }
+            me.ip      = ipOf(cap.address);
+            me.port    = portOf(cap.address);
+            me.subNetwork = sn.name;
+            me.addressSource = MmsEndpoint::AddressSource::ConnectedAP;
+            if (!me.ip.empty())
+                mmsEndpoints_[keyMms(me.iedName, me.apName)] = std::move(me);
+        }
+    }
+
+    // --- Endpoints GOOSE/SV.
+    //
+    // The control block declared in LN0 is the source of truth: an endpoint
+    // exists because the IED publishes it. The Communication section only
+    // supplies the MAC/APPID needed to find that stream on the wire, and is
+    // joined in afterwards. Iterating Communication instead (the previous
+    // behaviour) meant an SCD with control blocks but no <Communication> block
+    // produced zero endpoints and no diagnostic at all.
+    auto getP = [](const std::unordered_map<std::string,std::string>& a,
+                   const char* k)->std::string {
         auto it = a.find(k); return it==a.end()? "" : it->second;
     };
 
+    // Communication side: (ied|ld|cb) -> address. Multiple ConnectedAP entries
+    // for the same control block would be a modelling error, so first one wins.
+    struct CommAddress { std::string mac, appid, vlanId, vlanPrio, smpRate, subNetwork; };
+    std::unordered_map<std::string, CommAddress> gseAddr, svAddr;
+    // Control-block APPID vs the Communication APPID, when they disagree.
+    std::vector<std::string> appIdConflicts;
+
     for (const auto& sn : model_->communication.subNetworks) {
         for (const auto& cap : sn.connectedAPs) {
-            // GOOSE
             for (const auto& g : cap.gses) {
-                GseEndpoint e{};
-                e.iedName = cap.iedName; e.ldInst = g.ldInst; e.cbName = g.cbName;
-                e.mac     = getP(g.address, "MAC-Address");
-                e.appid   = getP(g.address, "APPID");
-                e.vlanId  = getP(g.address, "VLAN-ID");
-                e.vlanPrio= getP(g.address, "VLAN-PRIORITY");
-
-                if (auto ld = findLD(e.iedName, e.ldInst)) {
-                    for (const auto& cb : ld->ln0.gseCtrls) {
-                        if (cb.name == e.cbName) { e.datasetRef = cb.datSet; break; }
-                    }
-                    // A missing LD or a missing GSEControl is reported by validate_()
-                    // with a dedicated ErrorCode. Emitting here as well would report
-                    // the same fact twice under two different codes.
-                }
-                gseEndpoints_[keyGse(e.iedName, e.ldInst, e.cbName)] = std::move(e);
+                CommAddress a{g.address.count("MAC-Address") ? getP(g.address,"MAC-Address") : "",
+                              getP(g.address, "APPID"),
+                              getP(g.address, "VLAN-ID"),
+                              getP(g.address, "VLAN-PRIORITY"),
+                              "",
+                              sn.name};
+                gseAddr.emplace(keyGse(cap.iedName, g.ldInst, g.cbName), std::move(a));
             }
-
-            // SMV
             for (const auto& v : cap.smvs) {
-                SvEndpoint e{};
-                e.iedName = cap.iedName; e.ldInst = v.ldInst; e.cbName = v.cbName;
-                e.mac     = getP(v.address, "MAC-Address");
-                e.appid   = getP(v.address, "APPID");
-                e.vlanId  = getP(v.address, "VLAN-ID");
-                e.vlanPrio= getP(v.address, "VLAN-PRIORITY");
-                e.smpRate = getP(v.address, "SmpRate");
-
-                if (auto ld = findLD(e.iedName, e.ldInst)) {
-                    for (const auto& cb : ld->ln0.smvCtrls) {
-                        if (cb.name == e.cbName) { e.datasetRef = cb.datSet; break; }
-                    }
-                    // Missing LD / control block is reported by validate_() instead.
-                }
-                svEndpoints_[keyGse(e.iedName, e.ldInst, e.cbName)] = std::move(e);
+                CommAddress a{v.address.count("MAC-Address") ? getP(v.address,"MAC-Address") : "",
+                              getP(v.address, "APPID"),
+                              getP(v.address, "VLAN-ID"),
+                              getP(v.address, "VLAN-PRIORITY"),
+                              getP(v.address, "SmpRate"),
+                              sn.name};
+                svAddr.emplace(keyGse(cap.iedName, v.ldInst, v.cbName), std::move(a));
             }
         }
+    }
+
+    // IED side: every GSEControl / SampledValueControl declared in LN0.
+    for (const auto& ied : model_->ieds) {
+        auto addLd = [&](const LogicalDevice& ld) {
+            for (const auto& cb : ld.ln0.gseCtrls) {
+                GseEndpoint e{};
+                e.iedName    = ied.name;
+                e.ldInst     = ld.inst;
+                e.cbName     = cb.name;
+                e.datasetRef = cb.datSet;
+                // @appID on the control block is authoritative when present;
+                // Communication may carry a conflicting value.
+                e.appid      = cb.appID;
+                if (const auto it = gseAddr.find(keyGse(ied.name, ld.inst, cb.name));
+                    it != gseAddr.end()) {
+                    e.mac = it->second.mac;
+                    e.vlanId = it->second.vlanId;
+                    e.vlanPrio = it->second.vlanPrio;
+                    e.subNetwork = it->second.subNetwork;
+                    if (e.appid.empty()) e.appid = it->second.appid;
+                    e.addressDeclared = true;
+                    // GSEControl@appID is authoritative; a Communication APPID
+                    // that disagrees is an interoperability hazard (we filter
+                    // incoming GOOSE by APPID, so the wrong one loses every
+                    // frame), so report it rather than silently pick a winner.
+                    if (!cb.appID.empty() && !it->second.appid.empty()
+                        && cb.appID != it->second.appid) {
+                        appIdConflicts.push_back(
+                            ied.name + "/" + ld.inst + "/" + cb.name
+                            + ": LN0 appID=\"" + cb.appID
+                            + "\" vs Communication APPID=\"" + it->second.appid
+                            + "\" (utilisé: " + e.appid + ")");
+                    }
+                }
+                gseEndpoints_[keyGse(ied.name, ld.inst, cb.name)] = std::move(e);
+            }
+            for (const auto& cb : ld.ln0.smvCtrls) {
+                SvEndpoint e{};
+                e.iedName    = ied.name;
+                e.ldInst     = ld.inst;
+                e.cbName     = cb.name;
+                e.datasetRef = cb.datSet;
+                e.appid      = cb.appID;
+                if (const auto it = svAddr.find(keyGse(ied.name, ld.inst, cb.name));
+                    it != svAddr.end()) {
+                    e.mac = it->second.mac;
+                    e.vlanId = it->second.vlanId;
+                    e.vlanPrio = it->second.vlanPrio;
+                    e.smpRate = it->second.smpRate;
+                    e.subNetwork = it->second.subNetwork;
+                    if (e.appid.empty()) e.appid = it->second.appid;
+                    e.addressDeclared = true;
+                }
+                svEndpoints_[keyGse(ied.name, ld.inst, cb.name)] = std::move(e);
+            }
+        };
+        for (const auto& ld : ied.ldevices) addLd(ld);
+        for (const auto& ap : ied.accessPoints)
+            for (const auto& ld : ap.ldevices) addLd(ld);
+    }
+
+    for (const auto& c : appIdConflicts) {
+        diags_.push_back({
+            ErrorCode::AppIdMismatch,
+            "LN0.ControlBlocks",
+            "APPID incohérent pour un bloc de contrôle: " + c,
+            "LN0/@appID fait foi (IEC 61850-7-4). Corrigez le P[type=\"APPID\"] "
+            "côté Communication ou le @appID du bloc de contrôle.",
+            Severity::Warning
+        });
     }
 
     // --- Index des DataSets & mapping FCDA -> datasets

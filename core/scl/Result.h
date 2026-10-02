@@ -23,7 +23,8 @@ enum class ErrorCode {
     DuplicateIEDName,       // IED@name en doublon
     DuplicateConnectivityNode, // ConnectivityNode@pathName en doublon
     DuplicateDataSetName,   // DataSet@name en doublon dans un même LN
-    MissingSmpRate          // SV sans P[type="SmpRate"] (warning)
+    MissingSmpRate,         // SV sans P[type="SmpRate"] (warning)
+    AppIdMismatch,          // LN0 @appID != Communication APPID
 };
 
 const char* to_string(ErrorCode c);

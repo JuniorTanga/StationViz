@@ -30,6 +30,10 @@ void stripElementPrefixes(pugi::xml_node node) {
 } // namespace
 
 // ---- utils
+// Parses "SS/VL/BAY/CN" into its segments. ss is always segment 0 and cn is
+// always the last; ss used to be left empty, which silently defaulted every
+// ResolvedEnd::ss to the containing substation and so broke any cross-substation
+// reference.
 static std::optional<CNAddress> parseConnectivityPath(const std::string& path) {
     std::vector<std::string> segs;
     std::string cur;
@@ -44,6 +48,7 @@ static std::optional<CNAddress> parseConnectivityPath(const std::string& path) {
     a.cn  = segs.back();
     a.bay = segs[segs.size()-2];
     a.vl  = segs[segs.size()-3];
+    if (segs.size() >= 4) a.ss = segs[0];
     return a;
 }
 

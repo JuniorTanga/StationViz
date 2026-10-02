@@ -195,10 +195,18 @@ struct LogicalDevice {
 };
 
 // --- Endpoints (index réseau prêts pour network core)
+//
+// The control block declared in LN0 is the source of truth: an endpoint exists
+// because the IED publishes it, and the Communication section only supplies the
+// MAC/APPID needed to find it on the wire. `addressDeclared` records whether
+// that mapping was actually present, so a missing one can be diagnosed instead
+// of silently yielding an endpoint with an empty MAC.
 struct GseEndpoint {
     std::string iedName, ldInst, cbName;
     std::string mac, appid, vlanId, vlanPrio;
     std::string datasetRef; // nom du DataSet sur LN0
+    std::string subNetwork; // SubNetwork that carried the Address mapping
+    bool addressDeclared {false};
 };
 
 struct SvEndpoint {
@@ -206,12 +214,21 @@ struct SvEndpoint {
     std::string mac, appid, vlanId, vlanPrio;
     std::string smpRate;
     std::string datasetRef;
+    std::string subNetwork;
+    bool addressDeclared {false};
 };
 
 struct MmsEndpoint {
     std::string iedName, apName;
     std::string ip;
     std::string port; // "102" par défaut si absent
+    std::string subNetwork;
+    // Where the address came from: the ConnectedAP, the AccessPoint, or a
+    // Server. The first is canonical; the others are vendor variations that are
+    // still widely emitted and were previously ignored entirely.
+    enum class AddressSource { None, ConnectedAP, AccessPoint, Server };
+    AddressSource addressSource {AddressSource::None};
+    std::string serverName;
 };
 
 struct AccessPoint {

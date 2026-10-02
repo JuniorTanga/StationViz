@@ -71,7 +71,7 @@ static const char* kSCL = R"(<?xml version="1.0" encoding="UTF-8"?>
         </Address>
         <GSE ldInst="LD1" cbName="GoCB01">
           <Address>
-            <P type="APPID">1001</P>
+            <P type="APPID">0001</P>
             <P type="MAC-Address">01-0C-CD-01-00-01</P>
             <P type="VLAN-ID">100</P>
             <P type="VLAN-PRIORITY">4</P>
@@ -79,7 +79,7 @@ static const char* kSCL = R"(<?xml version="1.0" encoding="UTF-8"?>
         </GSE>
         <SMV ldInst="LD1" cbName="SvCB01">
           <Address>
-            <P type="APPID">2001</P>
+            <P type="APPID">0101</P>
             <P type="MAC-Address">01-0C-CD-04-00-01</P>
             <P type="VLAN-ID">200</P>
             <P type="VLAN-PRIORITY">5</P>
@@ -144,7 +144,7 @@ TEST(Scl, LoadAndIndexes) {
     auto itG = gses.find("IED1|LD1|GoCB01");
     ASSERT_TRUE(itG != gses.end());
     EXPECT_EQ(itG->second.datasetRef, "DS_CB");
-    EXPECT_EQ(itG->second.appid, "1001");
+    EXPECT_EQ(itG->second.appid, "0001");
     EXPECT_EQ(itG->second.mac, "01-0C-CD-01-00-01");
     EXPECT_EQ(itG->second.vlanId, "100");
     EXPECT_EQ(itG->second.vlanPrio, "4");
@@ -154,7 +154,7 @@ TEST(Scl, LoadAndIndexes) {
     auto itS = svs.find("IED1|LD1|SvCB01");
     ASSERT_TRUE(itS != svs.end());
     EXPECT_EQ(itS->second.datasetRef, "DS_CB");
-    EXPECT_EQ(itS->second.appid, "2001");
+    EXPECT_EQ(itS->second.appid, "0101");
     EXPECT_EQ(itS->second.mac, "01-0C-CD-04-00-01");
     EXPECT_EQ(itS->second.vlanId, "200");
     EXPECT_EQ(itS->second.vlanPrio, "5");
