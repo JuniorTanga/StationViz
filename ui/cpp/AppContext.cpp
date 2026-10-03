@@ -432,29 +432,19 @@ void AppContext::fillModelsFromPlanJson()
     // Pour tracer la barre de bus (span)
     QHash<QString, double> busSpanMinX, busSpanMaxX;
 
-    // ----- Helpers d'ordonnancement canonique d'un feeder -----
-    auto canonicalizeFeeder = [&](const QStringList& chain)->QStringList {
-        // On sélectionne les rôles typiques
-        QString cb, ct, vt; QStringList ds; QString line;
-        QStringList others;
-        for (const QString& nid : chain) {
-            const QString k = kindById.value(nid);
-            if      (k == "CB" || k == "CircuitBreaker") cb = nid;
-            else if (k == "DS" || k == "Disconnector")   ds << nid;
-            else if (k == "CT")                           ct = nid;
-            else if (k == "VT")                           vt = nid;
-            else if (k == "Line" || nid.endsWith("_LINE")) line = nid;
-            else others << nid;
-        }
-        QStringList out;
-        if (!ds.isEmpty()) out << ds.first();   // DS amont (près bus)
-        if (!cb.isEmpty()) out << cb;           // CB
-        if (ds.size() >= 2) out << ds.last();   // DS aval (vers ligne)
-        if (!ct.isEmpty()) out << ct;           // CT
-        // VT ne va pas dans la chaîne verticale : on fera une branche CT → VT
-        for (const auto& x : others) out << x;  // le reste (si présent)
-        if (!line.isEmpty()) out << line;       // endpoint flèche
-        return out.isEmpty() ? chain : out;
+    // ---- Feeder ordering ----
+    //
+    // sldLib resolves the chain by walking the bay's own CE<->CN links outward
+    // from its bus-side terminal, so f["chain"] is already in true electrical
+    // order. The previous canonicalizeFeeder() re-sorted it by equipment kind,
+    // which produced DS, CB, DS, CT, Line and placed the CT after the line-side
+    // disconnector. Roles are read from the plan for the lateral VT branch and
+    // for the endpoint marker; the vertical chain is used verbatim.
+    auto roleOf = [](const nlohmann::json& f, const char* key) -> QString {
+        if (!f.contains("roles")) return {};
+        const auto& r = f["roles"];
+        if (!r.contains(key) || !r[key].is_string()) return {};
+        return QString::fromStdString(r[key].get<std::string>());
     };
 
     // ---- Feeders (placement + branche VT) ----
@@ -513,19 +503,19 @@ void AppContext::fillModelsFromPlanJson()
             if (!busSpanMinX.contains(busId) || nx < busSpanMinX[busId]) busSpanMinX[busId] = nx;
             if (!busSpanMaxX.contains(busId) || nx > busSpanMaxX[busId]) busSpanMaxX[busId] = nx;
 
-            // chaîne canonique (DS – CB – DS – CT – … – endpoint)
-            const QStringList chain = canonicalizeFeeder(rawChain);
+            // Chain in true electrical order, resolved by sldLib.
+            const QStringList chain = rawChain;
 
             // placement vertical + arêtes
             QString prev = busId;
             int ci = 0;
 
-            // détecter CT/VT dans la *chaîne brute* (pour branche latérale)
-            QString ctId, vtId;
+            // CT/VT for the lateral branch come from the resolved roles.
+            QString ctId = roleOf(f, "ct");
+            QString vtId = roleOf(f, "vt");
             for (const auto& nid : rawChain) {
-                const QString k = kindById.value(nid);
-                if (k == "CT")      ctId = ctId.isEmpty() ? nid : ctId;
-                else if (k == "VT") vtId = vtId.isEmpty() ? nid : vtId;
+                if (ctId.isEmpty() && kindById.value(nid) == "CT") ctId = nid;
+                if (vtId.isEmpty() && kindById.value(nid) == "VT") vtId = nid;
             }
 
             bool ctPlaced = false;
