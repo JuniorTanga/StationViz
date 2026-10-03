@@ -16,7 +16,6 @@
 
 #include "SclManager.h"
 #include "SldManager.h"
-#include "SldConfig.h"
 #include "nlohmann/json.hpp"
 
 namespace fs = std::filesystem;
@@ -120,7 +119,7 @@ int main(int argc, char** argv){
     sclw.write_header("id","status","diag_count","diag_sample1","diag_sample2","diag_sample3");
 
     RowWriter sldw(outdir / "sld.csv");
-    sldw.write_header("id","rawV","rawE","condV","condE","buses","feeders","couplers","transformers");
+    sldw.write_header("id","nodes","feeders","buses","couplers","transformers");
 
     RowWriter netw(outdir / "network.csv");
     netw.write_header("id","gse","gse_dataset_missing","sv","sv_dataset_missing","mms","sv_missing_smpRate");
@@ -138,7 +137,6 @@ int main(int argc, char** argv){
     bool dump_sld = M.value("dump_json_sld", false);
 
     // Optional SLD config
-    sld::HeuristicsConfig cfg;
 
     auto scan_model = [](const scl::SclModel* m){
         struct C { size_t ss=0, vl=0, bay=0, cn=0, ce=0, ied=0, ld=0, ln=0; };
@@ -238,36 +236,32 @@ int main(int argc, char** argv){
 
         // Build SLD + timing
         auto t2 = std::chrono::steady_clock::now();
-        sld::SldManager sldm(&sm, cfg);
+        sld::SldManager sldm(&sm);
         auto st2 = sldm.build();
         auto t3 = std::chrono::steady_clock::now();
         auto dt_sld = std::chrono::duration_cast<std::chrono::milliseconds>(t3 - t2).count();
 
         // SLD counts
         const auto& plan = sldm.plan();
-        size_t rawV = num_vertices(sldm.raw());
-        size_t rawE = num_edges(sldm.raw());
-        size_t condV = num_vertices(sldm.condensed());
-        size_t condE = num_edges(sldm.condensed());
-        size_t buses = plan.buses.size();
-        size_t feeders = plan.feeders.size();
-        size_t couplers = plan.couplers.size();
-        size_t transformers = plan.transformers.size();
+        const size_t nodes      = plan.nodes.size();
+        const size_t buses      = plan.buses.size();
+        const size_t feeders    = plan.feeders.size();
+        const size_t couplers   = plan.couplers.size();
+        const size_t transformers = plan.transformers.size();
 
         sldw.write_row(id,
-                       std::to_string(rawV),
-                       std::to_string(rawE),
-                       std::to_string(condV),
-                       std::to_string(condE),
-                       std::to_string(buses),
+                       std::to_string(nodes),
                        std::to_string(feeders),
+                       std::to_string(buses),
                        std::to_string(couplers),
                        std::to_string(transformers));
 
+        // A bay the engine could not place must be visible, not silently empty.
+        for (const auto& warn : plan.warnings)
+            printf("  WARN %s: %s\n", id.c_str(), warn.c_str());
+
         if (dump_sld){
-            std::ofstream jr(fileOutDir / "sld_raw.json");       jr << sldm.rawJson();
-            std::ofstream jc(fileOutDir / "sld_condensed.json"); jc << sldm.condensedJson();
-            std::ofstream jp(fileOutDir / "sld_plan.json");      jp << sldm.planJson();
+            std::ofstream jp(fileOutDir / "sld_plan.json"); jp << sldm.planJson();
         }
 
         // Network checks (runner-side metrics)

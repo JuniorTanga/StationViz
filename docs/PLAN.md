@@ -756,10 +756,225 @@ Append entries here as phases complete. Newest at the bottom.
   `ctest`: 44/44.
 - **2026-10-02** Phase A done (layering inversion, MMS address sources, `CNAddress::ss`).
   `ctest`: 53/53.
-- **2026-10-02** Phase B: SLD acceptance table (8 tests, 3 DISABLED_), transformers seeded into the
-  graph, `"BB"` hint restored, `endpointKinds`/`seriesPassKinds` initialisers restored (12 Unknown
-  feeders -> 5, and a duplicate-edge bug fixed). Four bus-detection rewrites built and measured, all
-  reverted; the blocker is now an executable test. `ctest`: 61/61.
+- **2026-10-03** **sldLib rewritten from scratch.** The engine was inferring bay structure from a
+  graph that had already had it flattened away; it is now derived from the SCL Bay structure
+  directly. Deleted the Boost graph, the heuristics config and the whole inference pipeline. All 3
+  transformers on `substation.scd` now resolve with 8 windings on distinct busbars, for the first
+  time. Feeder roles resolved rather than sniffed. `ctest`: 65/65, no DISABLED_ tests remaining.
+  Side effect: fixture suite 5.0 s -> 2.9 s.
+- **2026-10-01** Review completed, plan written. No code changed yet.
+- **2026-10-01** Baseline commit `675e9c3` (143 modified + 5 untracked paths captured, tree clean).
+  `DataTypeTemplates` decided **out of scope** for the first prototype.
+
+### Phase 0: complete
+
+Build is green on Linux (Qt 6.4.2, gcc 13.3.0). `ctest`: **35/35 pass**.
+
+- Baseline commit first, so every later step is revertible.
+- Deleted the dead trees and stubs listed in §8 Phase 0 item 4 (47 files).
+- Qt floor lowered 6.8 to 6.2 (matches the installed 6.4.2) and `QuickDialogs2` now requested,
+  which `QtQuick.Dialogs`' `FileDialog` needs. `Qt6::Svg` is **optional**: it is absent here
+  (`libqt6svg6-dev` not installed, `sudo` needs a password), so the SLD compiles and runs without
+  equipment symbols via a `STATIONVIZ_HAVE_SVG` guard. Install the dev package to re-enable them.
+- Warnings on for `sclLib`/`sldLib`/`stationviz_ui`.
+- `scl_tests` now **runs and links the real `sclLib`** (was recompiling the sources as `scl_core`).
+  Added `tests_scl_robustness.cpp`, 14 new tests, 15 total.
+- New `tests/ui_smoke`: headless (`QT_QPA_PLATFORM=offscreen`) test of the real `AppContext`
+  pipeline, registered per fixture in CTest. It is what proves the SLD models actually populate,
+  ids stay unique, and edges are not duplicated. Added `EdgeModel::get()` to make this possible.
+- Manifest paths made relative to the manifest; the three fixtures it referenced but that did not
+  exist were dropped, and `REAL_STATION1` (the real Siemens ICD) added. Moved `mnt/data` to `data`.
+- Removed a second hand-rolled nlohmann copy and the checked-in MinGW `.dll`/`.exe`.
+
+Bugs found and fixed, each with a regression test:
+
+| Bug | Fix |
+|---|---|
+| `matchCN` could never resolve a full path against a logical key | `lastSegment` split on `'/'` only; logical keys use `':'`. Now splits on both. This was the sole pre-existing test failure. |
+| `loadScl` threw `std::out_of_range` on a `ConnectedAP` naming an absent IED | `find()` + new `InvalidIedRef` diagnostic. Reproduced before the fix. |
+| `std::stod` threw on garbage/overflow `Voltage`, accepted `nan`/`inf`, and was locale-dependent | `parseDoubleStrict` (locale-independent, finite-only) + `ScalarWithUnit::valid` |
+| `Result<T>` accessors dereferenced a disengaged `optional` (UB) | throw `BadResultAccess`; added `has_value()`, `[[nodiscard]]` |
+| `<scl:SCL>` prefixed documents failed as "Missing `<SCL>` root" | normalise element names once at parse time, so all 24 lookup sites keep working |
+| `AccessPoint` with two `Server`s silently dropped every LD after the first | iterate all `Server` elements; added `AccessPoint::serverAddresses` |
+| `<Equipment>`/`<Container>`-wrapped `PowerTransformer` was invisible | search those containers too |
+| A winding kept only its first `TapChanger`, and `PhaseTapChanger` was dropped | `std::optional` → `vector<TapChangerInfo>` |
+| 3 real problems produced 8 diagnostics, same fact under two codes | `buildIndexes_` no longer duplicates; `ControlBlockNotFound` suppressed when the LD itself is missing (a cascade) |
+| Duplicate `ConnectivityNode@pathName` / `DataSet@name` failed silently | new `DuplicateConnectivityNode` / `DuplicateDataSetName` diagnostics (the latter scoped per IED) |
+| `code_to_string` in the test harness fell through to `"Other"` for every new code, weakening the acceptance policy | delegates to the new `scl::to_string` |
+| **`SldView` never repainted on load** | `setNodes`/`setEdges` connect to `modelReset`/`dataChanged`/`rows*`. This is 2.1, the flagship bug |
+| `dragging_` permanently sticky after one pan | added `mouseReleaseEvent` |
+| Clicking empty space never deselected | emits `nodeClicked("")` |
+| Every bus span emitted **two** identical `BusSpan` edges | removed the duplicated loop in `AppContext.cpp` |
+| `iconForKind` returned a nonexistent `busbar.svg` | removed the branch |
+| `iconWorldHeight` was declared, settable, and ignored (hardcoded `46.f`, which overlapped the adjacent lane) | now actually used |
+
+Two fixtures were **invalid**, not a parser defect: `SCD_BROKEN_CN.scd` declared the CN it was meant
+to be missing, and `SCD_2VL_TR*.scd` nested `PowerTransformer` inside `VoltageLevel` (not schema
+valid, so the parser correctly ignored it). Both rewritten; `SCD_2VL_TR` now yields
+`pt=1` with 2 resolved windings.
+
+### Phase 1: complete (P0, P1, P2)
+
+All of §3 P0, P1 (except the `Communication`/`LN0` layering inversion and `ReportControl`) and P2
+are done, with 15 tests. `scl_sld_demo` acceptance is green (16 fixtures, exit 0).
+
+### ReportControl / Inputs / ExtRef: done
+
+This was the critical path: without it there is no way to subscribe to a B-report, so no FAT
+supervision loop was possible. Added to `sclLib`:
+
+- `ReportControlMeta` with `rptID`, `confRev`, `buffered`, `intgPd`, `desc`, `TrgOps` and
+  `OptFields`; `ExtRefRef` for `Inputs/ExtRef`.
+- `sclParser` reads both `<ReportControl>` and `<ReportControlBlock>` (the historical name for a
+  buffered block, same attributes), plus `<DataSet><Inputs><ExtRef>`.
+- **Both bit strings are named attributes, not positional.** `TrgOps` is
+  `dchg/qchg/dupd/intg/gi` and `OptFields` is `sequenceNumber/timeStamp/...`. I initially wrote a
+  positional reader and the test caught it immediately.
+- `TrgOps` defaults to `dchg + qchg + gi` when the element is absent, because an IED shipped with
+  `TrgOps=0` delivers nothing until an integrity period fires, and `IntgPd` often defaults to 0.
+- `SclManager::reportControls()` (index keyed `ied|ld|rcbName`), `reportControlsOf(ied)` in
+  document order, and `rcbReference()` which **prefers the SCL `rptID`** (what the server reports
+  and what libiec61850 matches on) and only synthesises `LD/LLN0$RP$` / `$BR$` as a fallback.
+- `toJsonNetworkMap()` gains an `rcb[]` array for the COMMUNICATION tab.
+
+**Severity judgement worth recording.** The first version flagged a missing DataSet as an error and
+fired 1980 times on the real Siemens ICD. That file declares 55 distinct RCB names but only one
+`DataSet`, and no RCB carries an explicit `@datSet`: real vendors rely on the implicit DataSet
+without declaring it. An error there would make the tool fail on most real substation files, so the
+split is now: **explicit `@datSet` that resolves to nothing is an error; implicit undeclared
+DataSet is a warning.** Both are covered by tests.
+
+Verified on `station1.scd`: 36 MMS endpoints, 1980 RCBs (900 buffered), all with an `rptID`, all
+references containing `LLN0`. `ctest`: **44/44 pass**.
+
+Still open in Phase 1:
+- The **layering inversion** (§3 P1 first row) is still present for GOOSE/SV: endpoints still come
+  only from `Communication/.../GSE|SMV`, so an `LN0` control block with no `<Communication>` still
+  yields zero endpoints. (RCBs are unaffected: they need no Communication mapping at all.)
+- `mmsEndpoints_` still does not take `AccessPoint/Address` or `Server/Address`; the `"IED1|"` key
+  defect stands.
+- `CNAddress::ss` still unassigned; `Voltage` multiplier still a raw string.
+- `ReportControl` is read only under `LN0`. A control block declared under an `LN` (legal for
+  client-side RCBs in some profiles) is not yet covered.
+
+### Phase 2: complete (sldLib rewritten)
+
+**The root cause of the whole SLD engine was a wrong abstraction.** `SldBuilder::buildRaw`
+flattened each station into a CE<->CN bipartite Boost graph and then tried to *recover* the bay
+structure from it using degree thresholds and equipment-name hints. Flattening discards the one
+piece of the SCL that states the topology outright: **every `ConductingEquipment` lives inside a
+`Bay`.**
+
+That grouping is unambiguous, measured across every fixture:
+
+| Bay shape | Meaning | Evidence |
+|---|---|---|
+| no `ConductingEquipment` | busbar | `substation.scd`: 6, matching its 6 `BUSBAR*` bays |
+| equipment + **1** terminal leaving the bay | feeder, and that terminal names its busbar | `{1: 15}` on `substation.scd`, `{1: 12000}` on the 12k-bay stress file |
+| equipment + **2** terminals leaving the bay | coupler | `SCD_DB_COUPLER`'s `COUPLER` bay (a lone `CBR`) |
+
+And it resolves transformers without any graph traversal, because a `PowerTransformer` winding
+terminal names the bay it sits in, and that bay names its busbar. Both layouts exist in the wild and
+both are handled: the winding sits in the busbar bay (`SCD_2VL_TR`) or in the transformer's own
+equipment bay whose external connection reaches the busbar (`substation.scd`, `BAY_T4_0 ->
+BUSBAR9`).
+
+This is why every heuristic failed. `BUSA1` (a busbar) and `L1/IN` (a bay junction) became
+indistinguishable precisely because their bays had been merged. Four attempts were built and
+measured before this (`"no breaker on a busbar"`, honouring `busDegreeThreshold`, iterative Tarjan
+articulation points, DS/BusbarSection union-find); all regressed, and all are documented in the
+source with their numbers.
+
+**Deleted:** `SldBuilder`'s 698-line inference pipeline, the Boost graph, `SldPlan`'s raw and
+condensed graphs, `HeuristicsConfig` and `TopologyHint` entirely, and `rawJson`/`condensedJson`.
+The module is now ~470 lines with no heuristics configuration and no Boost dependency.
+
+**Results** (all fixtures, previously never non-zero except by accident):
+
+| fixture | buses | feeders | couplers | transformers |
+|---|---|---|---|---|
+| `SCD_SB_2L` | 1 | 2 | 0 | 0 |
+| `SCD_DB_COUPLER` | 2 | 2 | **1** | 0 |
+| `SCD_2VL_TR` | 2 | 0 | 0 | **1** (2 windings) |
+| `substation.scd` | 6 | 7 | 0 | **3** (8 windings) |
+| `scl.scd` (rewritten) | 2 | 2 | 0 | **1** (2 windings) |
+
+`substation.scd` reports 7 feeders, not 15, because 8 of the 15 equipment bays host a transformer
+winding and are transformer bays rather than feeders. All 8 windings land on distinct busbars.
+
+**Roles now resolved, not sniffed.** The feeder chain is read by walking the bay's own CE<->CN links
+outward from its bus-side terminal, so the order is a fact. The old code sniffed equipment kinds and
+emitted `DS, CB, DS, CT, Line`, placing the CT after the line-side disconnector. Roles live in
+`sldLib` (`FeederRoles`: busSideDs, breaker, ct, vt, lineSideDs, endpoint) and are published in
+`planJson()`.
+
+**Transformers are per-winding**, so a three-winding transformer is representable; the old
+`(busA, busB)` pair could not express one at all.
+
+**Other changes in this pass**
+- `scl.scd` rewritten as a real per-bay export (see §7). The old file put a busbar, coupler, feeder
+  and transformer inside one Bay using only `@cNodeName`, a shape no vendor produces, so it was
+  exercising an artefact rather than the real case.
+- The acceptance table is now 12 tests, all passing, with **no `DISABLED_` tests left**. Three
+  transformer bays were correctly reclassified, which changed the expected feeder count; the
+  expectation was corrected, not the code.
+- `AppContext`'s transformer block now reads one bus per winding instead of a `(busA, busB)` pair,
+  and `pushEdge` collapses identical triples, since two windings may legitimately reach the same
+  busbar.
+- Performance improved as a side effect: the whole fixture suite went from 5.0 s to 2.9 s, and peak
+  RSS is 78 MB on the 11 MB / 12k-bay file, because there is no longer a graph to copy three times.
+
+`ctest`: **65/65 pass.**
+
+## 9. Honest Assessment of Scale
+
+Phases 0 to 2 are roughly **two to three weeks** of focused work and yield a correct, tested SCL and
+SLD layer. The full FAT loop (SV from SCL, control with `CommandTermination`, test/report UI) is
+substantially more.
+
+**Recommendation: treat Phase 0 + 1 + 2 as the next milestone**, verifying each, rather than
+attempting all six phases at once.
+
+---
+
+## 10. Open Questions Still To Decide
+
+1. **`DataTypeTemplates` scope.** Absent today. It is a project rather than a fix, and it gates
+   both FCDA validation and SV decoding. In or out? If out, the thesis must not claim DO-level
+   navigation or SV-from-SCL.
+2. **TLS (IEC 62351).** The implementation doc claims it via `IedConnection_createEx`. Unbacked:
+   mbedtls is a README only, so the build has zero `CONFIG_MMS_SUPPORT_TLS`. Vendor mbedtls 2.16
+   and write `TLSConfiguration`, or drop the claim?
+3. **`CAP_NET_RAW` for tests.** `sudo` needs a password here. Raw-socket GOOSE/SV tests need
+   `setcap cap_net_raw+ep` on the test binary, or a password prompt per run. Decide the workflow
+   before Phase 4.
+4. **libpcap.** `/usr/include/pcap.h` is absent and `pkg-config` is not installed. Is `PcapReplayer`
+   (pcap replay/injection) actually needed for the PFE, or is it a nice-to-have? If not needed,
+   drop it from `networkLib` and remove the whole `find_package(PCAP)` problem.
+
+---
+
+## 11. Progress Log
+
+Append entries here as phases complete. Newest at the bottom.
+
+- **2026-10-02** Large SCD fixtures gitignored and purged from local history, pushed to GitHub.
+  `station1.scd`, `station_TOG.scd`, `SCD_HEAVY_*`, `SCD_PRIVATE_HEAVY` were removed with
+  `filter-branch` across **three** passes: the first only handled the new paths, but the baseline
+  commit still carried them under the old `mnt/data/` prefix, and two more heavy files
+  (`SCD_PRIVATE_HEAVY`, `station_TOG`) turned up on a second and third sweep. Repo is 0.3 MB.
+  Verified absent from the remote, and the batch runner plus `ui_smoke` now skip absent fixtures so
+  a fresh clone is green.
+- **2026-10-02** `ReportControl` / `Inputs` / `ExtRef` implemented in `sclLib` (see above).
+  `ctest`: 44/44.
+- **2026-10-02** Phase A done (layering inversion, MMS address sources, `CNAddress::ss`).
+  `ctest`: 53/53.
+- **2026-10-03** **sldLib rewritten from scratch.** The engine was inferring bay structure from a
+  graph that had already had it flattened away; it is now derived from the SCL Bay structure
+  directly. Deleted the Boost graph, the heuristics config and the whole inference pipeline. All 3
+  transformers on `substation.scd` now resolve with 8 windings on distinct busbars, for the first
+  time. Feeder roles resolved rather than sniffed. `ctest`: 65/65, no DISABLED_ tests remaining.
+  Side effect: fixture suite 5.0 s -> 2.9 s.
 - **2026-10-01** Review completed, plan written. No code changed yet.
 - **2026-10-01** Baseline commit `675e9c3` (143 modified + 5 untracked paths captured, tree clean).
   `DataTypeTemplates` decided **out of scope** for the first prototype.

@@ -1,198 +1,209 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<SCL xmlns="http://www.iec.ch/61850/2003/SCL" version="2007" revision="B">
-  <Header id="StationVizDemo" version="1" revision="0"/>
-  <!-- ===================== SUBSTATION ===================== -->
-  <Substation name="S12">
-    <!-- ===== E1 (225 kV) ===== -->
-    <VoltageLevel name="E1" nomFreq="50">
-      <Voltage unit="kV" multiplier="k">225</Voltage>
-      <!-- Bay W1 avec CN de bus et équipements -->
-      <Bay name="W1">
-        <!-- CN de bus (deux barres pour clustering + coupler) -->
-        <ConnectivityNode name="BB1" pathName="S12/E1/W1/BB1"/>
-        <ConnectivityNode name="BB2" pathName="S12/E1/W1/BB2"/>
+<!--
+  Two-bay arrangement used to check the SLD derivation against a double-bus
+  section.
 
-        <!-- BusbarSection (relie des segments de BB1 pour marquer 'bus-like') -->
-        <ConductingEquipment name="BBS1" type="BusbarSection">
-          <Terminal name="T1" cNodeName="BB1"/>
-          <Terminal name="T2" cNodeName="BB1"/>
-        </ConductingEquipment>
+  Rewritten to match how vendors actually export: one Bay per circuit, the
+  busbar in its own equipment-free Bay, and connectivity given by full
+  @connectivityNode paths. The previous version put a busbar, a coupler, a
+  feeder and a transformer all inside a single Bay using only @cNodeName, which
+  is not a shape any vendor produces, so it exercised an edge case rather than
+  the real thing.
+-->
+<SCL xmlns="http://www.iec.ch/61850/2003/SCL" version="2007B" revision="B" release="4">
+  <Header id="SCL_DOUBLE_BUS">
+    <Text>Double bus with section, one transformer</Text>
+    <History>
+      <Hitem version="1" revision="1" when="2026-01-01" who="fixture" what="initial"/>
+    </History>
+  </Header>
 
-        <!-- Coupler: Breaker entre BB1 et BB2 -->
-        <ConductingEquipment name="COUP1" type="CB">
-          <Terminal name="A" cNodeName="BB1"/>
-          <Terminal name="B" cNodeName="BB2"/>
-          <!-- Lien logique vers IED PROT2 -->
-          <LNode iedName="PROT2" ldInst="LD1" lnClass="XCBR" lnInst="1"/>
-        </ConductingEquipment>
+<Substation name="S1">
+  <!-- ============ E1: 380 kV ============ -->
+  <VoltageLevel name="E1" nomFreq="50" numPhases="3">
+    <Voltage unit="V" multiplier="k">380</Voltage>
 
-        <!-- Feeder Q01: CB -> DS -> CT -> LINE (oriente depuis BB1) -->
-        <ConductingEquipment name="Q01_CB" type="CB">
-          <Terminal name="T1" cNodeName="BB1"/>
-          <Terminal name="T2" cNodeName="Q01_CN1"/>
-          <LNode iedName="PROT1" ldInst="LD1" lnClass="XCBR" lnInst="1"/>
-        </ConductingEquipment>
+    <!-- Busbar bay: no ConductingEquipment, so it is a bus. -->
+    <Bay name="BB1">
+      <ConnectivityNode name="BB1_CN" pathName="S1/E1/BB1/BB1_CN"/>
+    </Bay>
 
-        <ConductingEquipment name="Q01_DS" type="DS">
-          <Terminal name="T1" cNodeName="Q01_CN1"/>
-          <Terminal name="T2" cNodeName="Q01_CN2"/>
-          <LNode iedName="PROT1" ldInst="LD1" lnClass="XSWI" lnInst="1"/>
-        </ConductingEquipment>
+    <!-- Feeder Q01: bus -> CB -> DS -> CT -> Line -->
+    <Bay name="Q01">
+      <ConnectivityNode name="IN"  pathName="S1/E1/Q01/IN"/>
+      <ConnectivityNode name="MID" pathName="S1/E1/Q01/MID"/>
+      <ConnectivityNode name="OUT" pathName="S1/E1/Q01/OUT"/>
+      <ConnectivityNode name="END" pathName="S1/E1/Q01/END"/>
+      <ConductingEquipment name="Q01_CB" type="CBR">
+        <Terminal name="T1" connectivityNode="S1/E1/BB1/BB1_CN"/>
+        <Terminal name="T2" connectivityNode="S1/E1/Q01/IN"/>
+        <LNode iedName="PROT1" ldInst="LD1" lnClass="XCBR" lnInst="1"/>
+      </ConductingEquipment>
+      <ConductingEquipment name="Q01_DS" type="DIS">
+        <Terminal name="T1" connectivityNode="S1/E1/Q01/IN"/>
+        <Terminal name="T2" connectivityNode="S1/E1/Q01/MID"/>
+        <LNode iedName="PROT1" ldInst="LD1" lnClass="XSWI" lnInst="1"/>
+      </ConductingEquipment>
+      <ConductingEquipment name="Q01_CT" type="CTR">
+        <Terminal name="T1" connectivityNode="S1/E1/Q01/MID"/>
+        <Terminal name="T2" connectivityNode="S1/E1/Q01/OUT"/>
+        <LNode iedName="PROT1" ldInst="LD1" lnClass="TCTR" lnInst="1"/>
+      </ConductingEquipment>
+      <ConductingEquipment name="Q01_LINE" type="LIN">
+        <Terminal name="T1" connectivityNode="S1/E1/Q01/OUT"/>
+        <Terminal name="T2" connectivityNode="S1/E1/Q01/END"/>
+        <LNode iedName="PROT1" ldInst="LD1" lnClass="CSWI" lnInst="1"/>
+      </ConductingEquipment>
+    </Bay>
 
-        <ConductingEquipment name="Q01_CT" type="CT">
-          <Terminal name="T1" cNodeName="Q01_CN2"/>
-          <Terminal name="T2" cNodeName="Q01_CN3"/>
-          <LNode iedName="PROT1" ldInst="LD1" lnClass="TCTR" lnInst="1"/>
-        </ConductingEquipment>
+    <!-- Feeder Q02: bus -> CB -> CT -> Line (no line-side disconnector) -->
+    <Bay name="Q02">
+      <ConnectivityNode name="IN"  pathName="S1/E1/Q02/IN"/>
+      <ConnectivityNode name="OUT" pathName="S1/E1/Q02/OUT"/>
+      <ConnectivityNode name="END" pathName="S1/E1/Q02/END"/>
+      <ConductingEquipment name="Q02_CB" type="CBR">
+        <Terminal name="T1" connectivityNode="S1/E1/BB1/BB1_CN"/>
+        <Terminal name="T2" connectivityNode="S1/E1/Q02/IN"/>
+        <LNode iedName="PROT2" ldInst="LD1" lnClass="XCBR" lnInst="1"/>
+      </ConductingEquipment>
+      <ConductingEquipment name="Q02_CT" type="CTR">
+        <Terminal name="T1" connectivityNode="S1/E1/Q02/IN"/>
+        <Terminal name="T2" connectivityNode="S1/E1/Q02/OUT"/>
+        <LNode iedName="PROT2" ldInst="LD1" lnClass="TCTR" lnInst="1"/>
+      </ConductingEquipment>
+      <ConductingEquipment name="Q02_LINE" type="LIN">
+        <Terminal name="T1" connectivityNode="S1/E1/Q02/OUT"/>
+        <Terminal name="T2" connectivityNode="S1/E1/Q02/END"/>
+        <LNode iedName="PROT2" ldInst="LD1" lnClass="CSWI" lnInst="1"/>
+      </ConductingEquipment>
+    </Bay>
+  </VoltageLevel>
 
-        <ConductingEquipment name="Q01_LINE" type="Line">
-          <Terminal name="T1" cNodeName="Q01_CN3"/>
-          <Terminal name="T2" cNodeName="Q01_EXT"/>
-        </ConductingEquipment>
-      </Bay>
+  <!-- ============ M1: 225 kV ============ -->
+  <VoltageLevel name="M1" nomFreq="50" numPhases="3">
+    <Voltage unit="V" multiplier="k">225</Voltage>
 
-      <!-- Bay TR1 sur E1 : borne HV du transformer -->
-      <Bay name="TR1_E1">
-        <ConnectivityNode name="TR1_HV" pathName="S12/E1/TR1_E1/TR1_HV"/>
-        <ConductingEquipment name="T1" type="PowerTransformer">
-          <!-- borne côté E1 : au bus BB2 -->
-          <Terminal name="H1" cNodeName="BB2"/>
-          <!-- borne vers le LV (relié au bus M1/BB1 via l'autre VL) -->
-          <Terminal name="X1" cNodeName="TR1_HV"/>
-          <LNode iedName="PROT2" ldInst="LD1" lnClass="PTRC" lnInst="1"/>
-        </ConductingEquipment>
-      </Bay>
-    </VoltageLevel>
+    <Bay name="BB2">
+      <ConnectivityNode name="BB2_CN" pathName="S1/M1/BB2/BB2_CN"/>
+    </Bay>
 
-    <!-- ===== M1 (20 kV) ===== -->
-    <VoltageLevel name="M1" nomFreq="50">
-      <Voltage unit="kV" multiplier="k">20</Voltage>
-      <Bay name="W1">
-        <ConnectivityNode name="BB1" pathName="S12/M1/W1/BB1"/>
-        <!-- Petite section de barre pour marquer bus -->
-        <ConductingEquipment name="BBS_M1" type="BusbarSection">
-          <Terminal name="T1" cNodeName="BB1"/>
-          <Terminal name="T2" cNodeName="BB1"/>
-        </ConductingEquipment>
-      </Bay>
+    <!--
+      Transformer bay: the winding terminal sits in this equipment bay, whose
+      single external connection reaches BB2. This is the layout substation.scd
+      uses, and the one SCD_2VL_TR does not.
+    -->
+    <Bay name="TRAFO">
+      <ConnectivityNode name="IN"  pathName="S1/M1/TRAFO/IN"/>
+      <ConnectivityNode name="WND" pathName="S1/M1/TRAFO/WND"/>
+      <ConductingEquipment name="T1_CB" type="CBR">
+        <Terminal name="T1" connectivityNode="S1/M1/BB2/BB2_CN"/>
+        <Terminal name="T2" connectivityNode="S1/M1/TRAFO/IN"/>
+        <LNode iedName="TRAFO_PROT" ldInst="LD1" lnClass="XCBR" lnInst="1"/>
+      </ConductingEquipment>
+      <ConductingEquipment name="T1_DS" type="DIS">
+        <Terminal name="T1" connectivityNode="S1/M1/TRAFO/IN"/>
+        <Terminal name="T2" connectivityNode="S1/M1/TRAFO/WND"/>
+        <LNode iedName="TRAFO_PROT" ldInst="LD1" lnClass="XSWI" lnInst="1"/>
+      </ConductingEquipment>
+    </Bay>
+  </VoltageLevel>
 
-      <!-- Bay TR1_M1 : borne LV du même transformer (idée : lier deux bus de VL différents) -->
-      <Bay name="TR1_M1">
-        <ConnectivityNode name="TR1_LV" pathName="S12/M1/TR1_M1/TR1_LV"/>
-        <ConductingEquipment name="T1_M1" type="PowerTransformer">
-          <!-- borne côté M1 : au bus BB1 (M1) -->
-          <Terminal name="X1" cNodeName="BB1"/>
-          <!-- liaison fictive vers le HV (pour compléter la topologie LV) -->
-          <Terminal name="H1" cNodeName="TR1_LV"/>
-          <LNode iedName="PROT2" ldInst="LD1" lnClass="PTRC" lnInst="2"/>
-        </ConductingEquipment>
-      </Bay>
-    </VoltageLevel>
-  </Substation>
+  <PowerTransformer name="T1" type="PT">
+    <TransformerWinding name="HV" type="PTW">
+      <Terminal name="t" connectivityNode="S1/M1/TRAFO/WND"/>
+    </TransformerWinding>
+    <TransformerWinding name="LV" type="PTW">
+      <Terminal name="t" connectivityNode="S1/E1/BB1/BB1_CN"/>
+      <TapChanger name="T1_TC" type="LTC"/>
+    </TransformerWinding>
+  </PowerTransformer>
+</Substation>
 
-  <!-- ===================== IEDs ===================== -->
-  <IED name="PROT1" manufacturer="DemoCorp" type="Protection">
-    <AccessPoint name="AP1">
-      <Address>
-        <P type="IP">192.168.10.11</P>
-      </Address>
-      <Server>
-        <LDevice inst="LD1">
-          <LN0 lnClass="LLN0" inst=""/>
-          <LN lnClass="XCBR" inst="1"/>
-          <LN lnClass="XSWI" inst="1"/>
-          <LN lnClass="TCTR" inst="1"/>
-        </LDevice>
-      </Server>
-    </AccessPoint>
-  </IED>
+<IED name="PROT1" manufacturer="Fixture" configVersion="1.0">
+  <AccessPoint name="AP1">
+    <Server>
+      <Authentication/>
+      <LDevice inst="LD1">
+        <LN0 lnClass="LLN0" inst="" lnType="LLN0$os">
+          <DataSet name="dsTrip">
+            <FCDA ldInst="LD1" prefix="" lnClass="XCBR" lnInst="1" doName="Pos" fc="ST"/>
+          </DataSet>
+          <ReportControl name="urcbTrip" datSet="dsTrip" confRev="1" buffered="true">
+            <TrgOps dchg="true" qchg="true" gi="true"/>
+          </ReportControl>
+        </LN0>
+        <LN prefix="" lnClass="XCBR" inst="1" lnType="XCBR$os"/>
+        <LN prefix="" lnClass="XSWI" inst="1" lnType="XSWI$os"/>
+        <LN prefix="" lnClass="TCTR" inst="1" lnType="TCTR$os"/>
+        <LN prefix="" lnClass="CSWI" inst="1" lnType="CSWI$os"/>
+      </LDevice>
+    </Server>
+  </AccessPoint>
+  <Services>
+    <DynAssociation/>
+    <ReportSettings/>
+    <SettingGroups/>
+  </Services>
+</IED>
 
-  <IED name="PROT2" manufacturer="DemoCorp" type="BayCtrl">
-    <AccessPoint name="AP1">
-      <Address>
-        <P type="IP">192.168.10.12</P>
-      </Address>
-      <Server>
-        <LDevice inst="LD1">
-          <LN0 lnClass="LLN0" inst=""/>
-          <LN lnClass="XCBR" inst="1"/>
-          <LN lnClass="PTRC" inst="1"/>
-          <LN lnClass="PTRC" inst="2"/>
-        </LDevice>
-      </Server>
-    </AccessPoint>
-  </IED>
+<IED name="PROT2" manufacturer="Fixture" configVersion="1.0">
+  <AccessPoint name="AP1">
+    <Server>
+      <Authentication/>
+      <LDevice inst="LD1">
+        <LN0 lnClass="LLN0" inst="" lnType="LLN0$os"/>
+        <LN prefix="" lnClass="XCBR" inst="1" lnType="XCBR$os"/>
+        <LN prefix="" lnClass="TCTR" inst="1" lnType="TCTR$os"/>
+        <LN prefix="" lnClass="CSWI" inst="1" lnType="CSWI$os"/>
+      </LDevice>
+    </Server>
+  </AccessPoint>
+</IED>
 
-  <IED name="SCADA1" manufacturer="DemoCorp" type="HMI">
-    <AccessPoint name="AP1">
-      <Address>
-        <P type="IP">192.168.20.50</P>
-      </Address>
-      <Server>
-        <LDevice inst="LD_STA">
-          <LN0 lnClass="LLN0" inst=""/>
-        </LDevice>
-      </Server>
-    </AccessPoint>
-  </IED>
+<IED name="TRAFO_PROT" manufacturer="Fixture" configVersion="1.0">
+  <AccessPoint name="AP1">
+    <Server>
+      <Authentication/>
+      <LDevice inst="LD1">
+        <LN0 lnClass="LLN0" inst="" lnType="LLN0$os"/>
+        <LN prefix="" lnClass="XCBR" inst="1" lnType="XCBR$os"/>
+        <LN prefix="" lnClass="XSWI" inst="1" lnType="XSWI$os"/>
+      </LDevice>
+    </Server>
+  </AccessPoint>
+</IED>
 
-  <!-- ===================== Communication ===================== -->
-  <Communication>
-    <!-- Process bus: GOOSE + SV -->
-    <SubNetwork name="ProcessBus" type="8-1">
-      <ConnectedAP iedName="PROT1" apName="AP1">
-        <Address>
-          <P type="IP">192.168.10.11</P>
-          <P type="Subnet">255.255.255.0</P>
-          <P type="MAC-Address">01-0C-CD-01-00-11</P>
-          <P type="VLAN-ID">100</P>
-          <P type="VLAN-PRIORITY">4</P>
-        </Address>
-        <GSE ldInst="LD1" cbName="GOOSE1">
-          <Address>
-            <P type="MAC-Address">01-0C-CD-01-00-01</P>
-            <P type="APPID">1001</P>
-            <P type="VLAN-ID">100</P>
-            <P type="VLAN-PRIORITY">4</P>
-          </Address>
-        </GSE>
-        <SMV ldInst="LD1" cbName="SMV1">
-          <Address>
-            <P type="MAC-Address">01-0C-CD-04-00-01</P>
-            <P type="APPID">2001</P>
-            <P type="VLAN-ID">101</P>
-            <P type="VLAN-PRIORITY">4</P>
-          </Address>
-        </SMV>
-      </ConnectedAP>
+<DataTypeTemplates>
+  <LNodeType id="LLN0$os" lnClass="LLN0">
+    <DO name="Mod" type="INC$os"/>
+  </LNodeType>
+  <LNodeType id="XCBR$os" lnClass="XCBR">
+    <DO name="Pos" type="POS$os"/>
+  </LNodeType>
+  <LNodeType id="XSWI$os" lnClass="XSWI">
+    <DO name="Pos" type="POS$os"/>
+  </LNodeType>
+  <LNodeType id="TCTR$os" lnClass="TCTR">
+    <DO name="Op" type="ACT$os"/>
+  </LNodeType>
+  <LNodeType id="CSWI$os" lnClass="CSWI">
+    <DO name="Op" type="ACT$os"/>
+  </LNodeType>
 
-      <ConnectedAP iedName="PROT2" apName="AP1">
-        <Address>
-          <P type="IP">192.168.10.12</P>
-          <P type="Subnet">255.255.255.0</P>
-          <P type="MAC-Address">01-0C-CD-01-00-12</P>
-          <P type="VLAN-ID">100</P>
-          <P type="VLAN-PRIORITY">4</P>
-        </Address>
-        <GSE ldInst="LD1" cbName="GOOSE2">
-          <Address>
-            <P type="MAC-Address">01-0C-CD-01-00-02</P>
-            <P type="APPID">1002</P>
-            <P type="VLAN-ID">100</P>
-            <P type="VLAN-PRIORITY">4</P>
-          </Address>
-        </GSE>
-      </ConnectedAP>
-    </SubNetwork>
+  <DOType id="INC$os" cdc="INC">
+    <DA name="stVal" bType="Enum" type="Mod"/>
+  </DOType>
+  <DOType id="ACT$os" cdc="ACT">
+    <DA name="general" bType="BOOLEAN"/>
+  </DOType>
+  <DOType id="POS$os" cdc="POS">
+    <DA name="general" bType="Enum" type="Mod"/>
+    <DA name="stVal" bType="DpPos" type="Pos"/>
+  </DOType>
+  <EnumType id="Mod">
+    <EnumVal ord="1">on</EnumVal>
+    <EnumVal ord="2">blocked</EnumVal>
+  </EnumType>
+</DataTypeTemplates>
 
-    <!-- Station bus: MMS -->
-    <SubNetwork name="StationBus" type="8-MMS">
-      <ConnectedAP iedName="SCADA1" apName="AP1">
-        <Address>
-          <P type="IP">192.168.20.50</P>
-          <P type="Subnet">255.255.255.0</P>
-        </Address>
-      </ConnectedAP>
-    </SubNetwork>
-  </Communication>
 </SCL>

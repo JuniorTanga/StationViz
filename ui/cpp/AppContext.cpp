@@ -212,7 +212,7 @@ void AppContext::fillIedsFromPlanJson() {
 // --------------------- BUILD SLD + MODELS ---------------------
 
 void AppContext::buildSldPlan() {
-    sldMgr_ = std::make_unique<sld::SldManager>(scl_.get(), sld::HeuristicsConfig{});
+    sldMgr_ = std::make_unique<sld::SldManager>(scl_.get());
     auto st = sldMgr_->build();
     if (!st) {
         diagModel_->append("error", "Erreur lors de la construction du SLD", "");
@@ -316,7 +316,14 @@ void AppContext::fillModelsFromPlanJson()
         ensureNode(busId, "Bus", busLabel, x, y);
     };
 
+    // Two windings of the same transformer can legitimately reach the same
+    // busbar, and sldLib reports each winding. The diagram wants one edge, so
+    // identical (from, to, kind) triples are collapsed here.
+    QSet<QString> edgeSeen;
     auto pushEdge = [&](const QString& a, const QString& b, const QString& kind){
+        const QString k = a + QLatin1Char('\x1f') + b + QLatin1Char('\x1f') + kind;
+        if (edgeSeen.contains(k)) return;
+        edgeSeen.insert(k);
         EdgeModel::Edge e; e.fromId=a; e.toId=b; e.kind=kind;
         edgeModel_->appendNoSignal(e);
     };
@@ -582,18 +589,20 @@ void AppContext::fillModelsFromPlanJson()
 
     // ---- Transformateurs inter-bus ----
     if (j.contains("transformers") && j["transformers"].is_array()) {
+        // sldLib emits one entry per winding, each naming the busbar that
+        // winding reaches. A three-winding transformer therefore appears three
+        // times, which is correct: the old (busA, busB) pair model could not
+        // represent one at all.
         for (const auto& t : j["transformers"]) {
-            const QString tr   = QString::fromStdString(t.value("tr", std::string{}));
-            const QString busA = QString::fromStdString(t.value("busA", std::string{}));
-            const QString busB = QString::fromStdString(t.value("busB", std::string{}));
-            if (!pos.contains(busA)) ensureBus(busA, busInfo.value(busA).label, 180.0, busY);
-            if (!pos.contains(busB)) ensureBus(busB, busInfo.value(busB).label, 180.0 + busXStep, busY);
-            const QPointF a = pos.value(busA), b = pos.value(busB);
-            const QPointF m = (a + b) / 2.0;
-            const double y = std::max(a.y(), b.y()) + 60.0;
-            ensureNode(tr, "Transformer", tr, m.x(), y);
-            pushEdge(busA, tr, "TransformerLink");
-            pushEdge(tr,  busB, "TransformerLink");
+            const QString tr  = QString::fromStdString(t.value("tr", std::string{}));
+            const QString bus = QString::fromStdString(t.value("bus", std::string{}));
+            if (tr.isEmpty() || bus.isEmpty()) continue;
+            if (!pos.contains(bus))
+                ensureBus(bus, busInfo.value(bus).label, 180.0, busY);
+            const QPointF b = pos.value(bus);
+            // Fan the windings out vertically so they do not stack on one point.
+            ensureNode(tr, "Transformer", tr, b.x(), b.y() + 60.0);
+            pushEdge(bus, tr, "TransformerLink");
         }
     }
 

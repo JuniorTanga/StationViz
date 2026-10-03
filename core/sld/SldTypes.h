@@ -1,173 +1,139 @@
 #pragma once
+#include <cstddef>
 #include <string>
 #include <vector>
 #include <unordered_map>
-#include <unordered_set>
-#include <optional>
-#include <memory>
-
-#include <boost/graph/adjacency_list.hpp>
-#include <boost/pending/disjoint_sets.hpp>
 
 #include "SclManager.h"
-#include "SldConfig.h"
 
 namespace sld {
 
-enum class NodeKind { ConnectivityNode, Bus, Equipment, Junction };
 enum class EquipmentKind {
     Unknown, CB, DS, ES, CT, VT, PT, Transformer, Line, Cable, BusbarSection
 };
 
-// Default kind sets. Kept out of HeuristicsConfig because EquipmentKind is
-// declared in SldTypes.h, which includes this header.
-inline void applyDefaultKindSets(HeuristicsConfig& cfg) {
-    if (cfg.seriesPassKinds.empty()) {
-        // A feeder runs bus -> DS -> CB -> DS -> line, so the switchgear in
-        // between is traversed rather than terminated on.
-        cfg.seriesPassKinds = {
-            static_cast<int>(EquipmentKind::DS),
-            static_cast<int>(EquipmentKind::ES),
-            static_cast<int>(EquipmentKind::CB),
-            static_cast<int>(EquipmentKind::BusbarSection),
-        };
-    }
-    if (cfg.endpointKinds.empty()) {
-        // What a feeder delivers to or comes from. Leaving this empty made
-        // isEnd() constant false, so every feeder reported endpointType
-        // "Unknown" and the walk ran straight through a transformer to reach
-        // its far winding.
-        cfg.endpointKinds = {
-            static_cast<int>(EquipmentKind::Line),
-            static_cast<int>(EquipmentKind::Cable),
-            static_cast<int>(EquipmentKind::Transformer),
-            static_cast<int>(EquipmentKind::CT),
-            static_cast<int>(EquipmentKind::VT),
-        };
-    }
-}
+const char* toString(EquipmentKind k);
+EquipmentKind equipmentKindFromSclType(const std::string& t);
 
-inline const char* toString(NodeKind k){
-    switch(k){
-        case NodeKind::ConnectivityNode: return "ConnectivityNode";
-        case NodeKind::Bus: return "Bus";
-        case NodeKind::Equipment: return "Equipment";
-        case NodeKind::Junction: return "Junction";
-    }
-    return "?";
-}
-inline const char* toString(EquipmentKind k){
-    switch(k){
-        case EquipmentKind::Unknown: return "Unknown";
-        case EquipmentKind::CB: return "CB";
-        case EquipmentKind::DS: return "DS";
-        case EquipmentKind::ES: return "ES";
-        case EquipmentKind::CT: return "CT";
-        case EquipmentKind::VT: return "VT";
-        case EquipmentKind::PT: return "PT";
-        case EquipmentKind::Transformer: return "Transformer";
-        case EquipmentKind::Line: return "Line";
-        case EquipmentKind::Cable: return "Cable";
-        case EquipmentKind::BusbarSection: return "BusbarSection";
-    }
-    return "?";
-}
+// ---------- Station topology ----------
+//
+// Derived from the SCL Bay structure rather than inferred from a graph. Every
+// ConductingEquipment belongs to a Bay, and that grouping is the topology:
+//
+//   - a Bay with no ConductingEquipment is a busbar;
+//   - a Bay with equipment and exactly one terminal reaching outside the Bay is
+//     a feeder, and that terminal names the busbar it hangs off;
+//   - a Bay with equipment and exactly two external terminals is a coupler;
+//   - a PowerTransformer winding terminal names the Bay it sits in, and that Bay
+//     names its busbar.
+//
+// This replaces a CE<->CN graph plus heuristics. See docs/PLAN.md section 4 for
+// why the inference approach could not work: flattening a station into a graph
+// discards the Bay grouping, after which a busbar and a bay junction have
+// identical neighbourhoods.
 
+// A ConnectivityNode referenced from a terminal, resolved to its owning Bay.
+// Terminals carry either @connectivityNode (a full pathName) or @cNodeName (a
+// bare name scoped to the Bay). CN short names repeat across Bays, so a bare
+// name is only ever resolved within the owning Bay.
+struct Ref {
+    std::string bay;
+    std::string cn;
+    bool ok {false};
+};
+
+// Stable, human-meaningful identifiers. The UI persists these in QSettings, so
+// they must be deterministic across runs and independent of iteration order.
 using NodeId = std::string;
-using EdgeId = std::string;
 
-// ---------- BGL vertex/edge properties ----------
-struct VertexProp {
+NodeId makeBusId(const std::string& ss, const std::string& vl, const std::string& bay);
+NodeId makeEquipId(const std::string& ss, const std::string& vl,
+                   const std::string& bay, const std::string& name);
+
+struct Bus {
     NodeId id;
-    NodeKind kind {NodeKind::ConnectivityNode};
-    EquipmentKind eKind {EquipmentKind::Unknown};
-
-    // contexte SCL
-    std::string ss, vl, bay;
-    std::string label;
-
-    // refs SCL pour Equipment/CN
-    const scl::ConductingEquipment* ce {nullptr};
-    const scl::ConnectivityNode*   cn {nullptr};
-
-    // LNodeRefs (pour pont Network)
-    std::vector<scl::LNodeRef> lnodes;
+    std::string ss, vl;
+    std::string label;         // bay name
+    std::string bay;
+    std::vector<std::string> cnPaths;   // CN pathNames inside this bay
 };
 
-enum class EdgeKind { CE_to_CN, Equip_to_Bus, CN_Merge };
-
-struct EdgeProp {
-    EdgeKind kind {EdgeKind::CE_to_CN};
-    std::string id;
-    std::string terminalName;
-    std::string cnPath; // useful for debug
-};
-
-// Undirected raw/condensed graphs (simple pour CE<->CN)
-using BoostGraph = boost::adjacency_list<
-    boost::vecS, boost::vecS, boost::undirectedS,
-    VertexProp, EdgeProp>;
-
-using V = boost::graph_traits<BoostGraph>::vertex_descriptor;
-using E = boost::graph_traits<BoostGraph>::edge_descriptor;
-
-// Pour retrouver vite un sommet depuis un NodeId stable
-struct Index {
-    std::unordered_map<NodeId, V> nodeById;
-};
-
-// ---- Bus cluster / plan objets (compat QML)
-struct BusCluster {
-    std::string ss;
-    std::string vl;
-    std::vector<NodeId> cnMembers; // NodeId des CN membres
-    NodeId busNodeId;              // id du vertex "BUS:..."
-    std::string label;
+// The ordered role chain of one bay's equipment, resolved by walking the bay's
+// own CE<->CN graph outward from its bus-side terminal. Ordering is therefore a
+// fact read from the SCL, not a guess from equipment kinds.
+struct FeederRoles {
+    std::string busSideDisconnector;  // first DS/CB seen from the bus side
+    std::string breaker;
+    std::string currentTransformer;
+    std::string voltageTransformer;
+    std::string lineSideDisconnector;
+    std::string endpoint;             // Line/Cable name
+    std::string endpointKind;         // "Line"/"Cable"/"CT"/""
 };
 
 struct Feeder {
-    std::string id;      // "FEED:BUS#k"
-    std::string ss, vl;
-    NodeId busId;
-    std::vector<NodeId> chain; // CE ids
-    std::string endpointType;  // "Line"/"Transformer"/"Cable"/"Unknown"
+    NodeId id;
+    std::string ss, vl, bay;
+    NodeId busId;                      // busbar this feeder hangs off
+    std::string busLabel;
+    std::vector<std::string> chain;    // ordered equipment ids, bus side first
+    FeederRoles roles;
+    std::string endpointType;
     int laneIndex {0};
 };
 
 struct BusCoupler {
-    NodeId couplerEquipId; // CE id
+    NodeId couplerEquipId;
     NodeId busA, busB;
-    bool   isBreaker {false};
+    bool isBreaker {false};
+    std::string ss, vl, bay;
+};
+
+// One link per winding, so a three-winding transformer yields three links
+// rather than being forced into an (busA, busB) pair it does not have.
+struct TransformerWinding {
+    std::string winding;
     std::string ss, vl;
+    NodeId bus;
+    std::string busLabel;
 };
 
 struct TransformerLink {
-    NodeId transformerId;
-    NodeId busA, busB;
-    std::string ssA, vlA, ssB, vlB;
+    NodeId transformerId;              // "TR:SS/T1"
+    std::string ss, label;
+    bool hasTapChanger {false};
+    std::vector<TransformerWinding> windings;
+    // Buses touched, sorted, for a quick membership test in the UI.
+    std::vector<NodeId> buses;
 };
 
 struct PlanTransformer {
-    std::string id;    // "TR:SS/T4"
-    std::string ss;
-    std::vector<std::string> buses;
-    std::string label;
-    bool hasTapChanger{false};
+    std::string id;
+    std::string ss, vl, label;
+    std::vector<NodeId> buses;
+    bool hasTapChanger {false};
+};
+
+// One row of the flat node list the UI lays out. Kind is "Bus", "Equipment" or
+// "Junction" so AppContext's existing branches keep working.
+struct NodeRecord {
+    std::string id, ss, vl, bay, label;
+    std::string kind;    // NodeKind as a string
+    std::string eKind;   // EquipmentKind as a string, empty for Bus/Junction
 };
 
 struct SldPlan {
-    BoostGraph condensed;
-    Index      idx; // index du condensed
-    std::unordered_map<std::string, std::vector<NodeId>> rankTopBus;   // key=SS:VL
-    std::unordered_map<std::string, std::vector<NodeId>> rankMiddleEq; // key=SS:VL
-    std::vector<BusCluster>  buses;
-    std::vector<Feeder>      feeders;
-    std::vector<BusCoupler>  couplers;
+    std::vector<NodeRecord> nodes;     // buses + equipment, in stable order
+    std::vector<Bus>   buses;
+    std::vector<Feeder> feeders;
+    std::vector<BusCoupler> couplers;
     std::vector<TransformerLink> transformers;
     std::vector<PlanTransformer> plan_transformers;
-
-    // Enrichissements pour QML (pont SCL/Network)
     std::vector<scl::EquipmentFromIED> equipmentsFromIEDs;
+
+    // Populated when the SCL could not be interpreted; surfaced to the UI
+    // instead of silently producing an empty diagram.
+    std::vector<std::string> warnings;
 };
 
 } // namespace sld

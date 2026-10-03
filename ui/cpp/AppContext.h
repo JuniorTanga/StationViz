@@ -16,6 +16,8 @@
 #include "Models/IedModel.h"
 #include "SldTypes.h"
 
+#include <nlohmann/json.hpp>
+
 class AppContext : public QObject {
     Q_OBJECT
     Q_PROPERTY(DiagnosticModel* diagnostics READ diagnostics CONSTANT)

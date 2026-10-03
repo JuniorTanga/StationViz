@@ -1,6 +1,5 @@
 add_library(sldLib
     SldTypes.h
-    SldConfig.h
     SldBuilder.cpp
     SldBuilder.h
     SldManager.cpp

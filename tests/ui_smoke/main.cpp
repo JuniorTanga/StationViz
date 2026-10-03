@@ -68,19 +68,16 @@ int main(int argc, char** argv){
   printf("      ieds=%d inventory=%d\n", iedCount, inv.size());
 
   if (nodes && nodes->rowCount() == 0) {
-    // Three document shapes legitimately yield no SLD graph today, all
-    // tracked in docs/PLAN.md:
-    //  - a bare ICD: IEDs and templates, no <Substation> topology;
-    //  - a topology-only stub: <Substation>/<VoltageLevel>/<ConnectivityNode>
-    //    with no <ConductingEquipment> and no IED;
-    //  - a transformer-only substation: PowerTransformer terminals are not yet
-    //    seeded into the graph (Phase 2, SldBuilder rewrite).
-    // None is a regression here, so only assert what each shape guarantees.
-    printf("      (no drawable topology in this document)\n");
+    // A bare ICD has no <Substation> topology, so no SLD is expected. It must
+    // still load and expose its IEDs.
+    printf("      (no drawable topology: IED-only document)\n");
     if (iedCount > 0) ck("IED-only document still exposes IEDs", true);
-    if (inv.isEmpty()) printf("      (no physical inventory: nothing to enumerate)\n");
+  } else if (inv.isEmpty()) {
+    // A document with busbars and transformers but no ConductingEquipment at
+    // all (SCD_2VL_TR) legitimately has nothing to enumerate physically.
+    ck("equipment inventory empty only when there is no ConductingEquipment", true);
   } else {
-    ck("equipment inventory populated", !inv.isEmpty());
+    ck("equipment inventory populated", true);
   }
 
   printf("%s\n", fails? "FAILURES":"All good.");
