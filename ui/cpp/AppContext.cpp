@@ -429,8 +429,17 @@ void AppContext::fillModelsFromPlanJson()
         }
     }
 
-    // Pour tracer la barre de bus (span)
-    QHash<QString, double> busSpanMinX, busSpanMaxX;
+    // Pour tracer la barre de bus (span).
+    //
+    // Every attachment to a busbar counts: feeder lanes, transformer windings
+    // and coupler ends. Tracking only feeder lanes meant a busbar whose sole
+    // attachments were transformer windings (BUSBAR9, BUSBAR11 and BUSBAR7 on
+    // substation.scd) got maxX == minX, failed the `maxX > minX` guard below and
+    // rendered as a small square instead of a bar.
+    QHash<QString, QList<double>> busAttachX;
+    const double busMinHalfSpanX = 34.0;   // shortest half-span for a bare busbar
+    const double transformerFanDx = 46.0; // horizontal fan-out per winding
+    QHash<QString, int> transformerFanIndex;
 
     // ---- Feeder ordering ----
     //
@@ -449,7 +458,6 @@ void AppContext::fillModelsFromPlanJson()
 
     // ---- Feeders (placement + branche VT) ----
     // ---- Feeders (placement + branche VT) ----
-    //QHash<QString, double> busSpanMinX, busSpanMaxX; // (re)déclaré ici, local au bloc
     if (j.contains("feeders") && j["feeders"].is_array()) {
         for (const auto& f : j["feeders"]) {
             if (!f.is_object()) continue;
@@ -499,9 +507,8 @@ void AppContext::fillModelsFromPlanJson()
             const double nx = x0 + laneIdx * laneStepX + ((laneIdx & 1) ? laneStagger : 0.0);
             const double topY = bpos.y() + feederTopDy;
 
-            // maj span bus
-            if (!busSpanMinX.contains(busId) || nx < busSpanMinX[busId]) busSpanMinX[busId] = nx;
-            if (!busSpanMaxX.contains(busId) || nx > busSpanMaxX[busId]) busSpanMaxX[busId] = nx;
+            // Attachment of this busbar.
+            busAttachX[busId].append(nx);
 
             // Chain in true electrical order, resolved by sldLib.
             const QStringList chain = rawChain;
@@ -549,23 +556,6 @@ void AppContext::fillModelsFromPlanJson()
         }
     }
 
-    // ---- Dessiner la barre de bus (span) *uniquement* pour les bus qui en ont besoin ----
-    for (auto it = busSpanMinX.constBegin(); it != busSpanMinX.constEnd(); ++it) {
-        const QString busId = it.key();
-        // sécurité : vérifier min/max présents et cohérents
-        if (!busSpanMaxX.contains(busId)) continue;
-        const double minX = it.value();
-        const double maxX = busSpanMaxX.value(busId, minX);
-        if (!(maxX > minX)) continue; // rien à relier
-
-        const double y = pos.value(busId).y();
-        const QString leftId  = busId + "#L";
-        const QString rightId = busId + "#R";
-        ensureNode(leftId,  "Junction", "", minX, y);
-        ensureNode(rightId, "Junction", "", maxX, y);
-        pushEdge(leftId, rightId, "BusSpan");
-    }
-
     // ---- Couplers ----
     if (j.contains("couplers") && j["couplers"].is_array()) {
         for (const auto& c : j["couplers"]) {
@@ -573,6 +563,8 @@ void AppContext::fillModelsFromPlanJson()
             const QString busB = QString::fromStdString(c.value("busB", std::string{}));
             if (!pos.contains(busA)) ensureBus(busA, busInfo.value(busA).label, 180.0, busY);
             if (!pos.contains(busB)) ensureBus(busB, busInfo.value(busB).label, 180.0 + busXStep, busY);
+            busAttachX[busA].append(pos.value(busA).x());
+            busAttachX[busB].append(pos.value(busB).x());
             pushEdge(busA, busB, "Coupler");
         }
     }
@@ -590,10 +582,46 @@ void AppContext::fillModelsFromPlanJson()
             if (!pos.contains(bus))
                 ensureBus(bus, busInfo.value(bus).label, 180.0, busY);
             const QPointF b = pos.value(bus);
-            // Fan the windings out vertically so they do not stack on one point.
-            ensureNode(tr, "Transformer", tr, b.x(), b.y() + 60.0);
+            // Fan the windings out so the three windings of one transformer do
+            // not stack on a single point.
+            const int n = transformerFanIndex[tr]++;
+            const double tx = b.x() + n * transformerFanDx;
+            ensureNode(tr, "Transformer", tr, tx, b.y() + 60.0);
+            // A winding is an attachment of this busbar, so it widens the span
+            // even when the busbar has no feeders at all.
+            busAttachX[bus].append(tx);
             pushEdge(bus, tr, "TransformerLink");
         }
+    }
+
+    // ---- Barre de bus (span) ----
+    // Last, so every attachment above has been recorded.
+    for (auto it = busInfo.constBegin(); it != busInfo.constEnd(); ++it) {
+        const QString& busId = it.key();
+        if (!pos.contains(busId)) continue;
+
+        const QList<double>& xs = busAttachX[busId];
+        const double cx = pos.value(busId).x();
+        double minX = cx, maxX = cx;
+        if (xs.size() >= 2) {
+            minX = *std::min_element(xs.constBegin(), xs.constEnd());
+            maxX = *std::max_element(xs.constBegin(), xs.constEnd());
+        } else if (xs.size() == 1) {
+            minX = xs.first();
+            maxX = xs.first();
+        }
+        // A busbar with one or no attachment still needs a visible bar.
+        if (!(maxX - minX > 1.0)) {
+            minX = cx - busMinHalfSpanX;
+            maxX = cx + busMinHalfSpanX;
+        }
+
+        const double y = pos.value(busId).y();
+        const QString leftId  = busId + "#L";
+        const QString rightId = busId + "#R";
+        ensureNode(leftId,  "Junction", "", minX, y);
+        ensureNode(rightId, "Junction", "", maxX, y);
+        pushEdge(leftId, rightId, "BusSpan");
     }
 
     nodeModel_->endReset();

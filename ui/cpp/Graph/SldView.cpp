@@ -279,6 +279,12 @@ QSGNode* SldView::updatePaintNode(QSGNode* old, UpdatePaintNodeData*)
 
         if (nodes_) {
             for (const auto& n : nodes_->items()) {
+                // Only equipment gets a marker box. Junction nodes are the
+                // endpoints of a bus span and a busbar is drawn as the bar
+                // itself; drawing a 12x12 box on every node put a square on the
+                // middle of each busbar and on all 12 span endpoints, which read
+                // as "the busbars are small squares".
+                if (n.kind != QLatin1String("Equipment")) continue;
                 const float r = 6.f;
                 const float x = (float)n.x, y = (float)n.y;
                 v[k++].set(x-r, y-r); v[k++].set(x+r, y-r);
