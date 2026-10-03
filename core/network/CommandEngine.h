@@ -6,7 +6,9 @@
 
 extern "C" {
 #include <iec61850_client.h>
-#include <control.h>
+// control.h is server-private (src/iec61850/inc_private) and pulls in
+// mms_server_libinternal.h. Everything this client needs is declared by
+// iec61850_client.h.
 }
 
 namespace network {
@@ -23,7 +25,11 @@ public:
     bool operateSBOw(IedConnection con, const std::string& ctlRef, int64_t val, int timeoutMs);
 
 private:
-    static MmsValue* makeMmsInteger(int64_t v);
+    // Builds a ctlVal of the type the IED declares, via
+    // ControlObjectClient_getCtlValType.
+    static MmsValue* makeCtlValue(ControlObjectClient ctrl, int64_t val);
+    // Sets the IEC 61850 `test` bit on a structure-typed control value.
+    static void setTestBit(MmsValue* ctlVal, bool on);
 
 private:
     std::atomic<Mode> mode_{Mode::ReadOnly};

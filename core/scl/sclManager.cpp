@@ -924,6 +924,11 @@ Result<const IED *> SclManager::findIED(const std::string &name) const {
     return Result<const IED *>({ErrorCode::InvalidPath, "IED not found: " + name});
 }
 
+const LogicalDevice* SclManager::findLogicalDevice(
+        const IED& ied, const std::string& ldInst) const {
+    return findLD_(ied, ldInst);
+}
+
 const LogicalDevice *SclManager::findLD_(const IED &ied,
                                          const std::string &ldInst) const {
     for (const auto &ld : ied.ldevices)
@@ -1048,24 +1053,29 @@ const DataSet* SclManager::getLn0Dataset(const std::string& ied,
 
 std::string SclManager::fcdaToMmsRef(const std::string& ldInst, const FcdaRef& f)
 {
-    // "LD/LN.DO(.DA)[FC]"
+    // IEC 61850-7-2 MMS object reference:
+    //     LdInst/LNName$FC$DO$DA
+    // The previous form was "LD/LN.DO.DA[FC]", which is not a valid MMS
+    // reference at all: a server would never resolve it.
+    //
+    // A FCDA usually names only the DO, because the whole functional
+    // constraint is the readable unit, so the DA is appended only when present.
     std::string ref;
-    ref.reserve(ldInst.size() + 1 + f.lnClass.size() + f.lnInst.size()
-                + 1 + f.doName.size() + 1 + f.daName.size() + 3 + f.fc.size());
+    ref.reserve(ldInst.size() + f.lnClass.size() + f.lnInst.size()
+                + f.doName.size() + f.daName.size() + f.fc.size() + 8);
 
     ref += ldInst;
     ref += '/';
     ref += makeLnName(f.lnClass, f.lnInst);
-    ref += '.';
+    ref += '$';
+    if (!f.fc.empty()) {
+        ref += f.fc;
+        ref += '$';
+    }
     ref += f.doName;
     if (!f.daName.empty()) {
-        ref += '.';
+        ref += '$';
         ref += f.daName;
-    }
-    if (!f.fc.empty()) {
-        ref += '[';
-        ref += f.fc;
-        ref += ']';
     }
     return ref;
 }

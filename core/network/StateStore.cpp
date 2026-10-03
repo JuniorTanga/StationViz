@@ -1,5 +1,6 @@
 // StationViz/core/network/StateStore.cpp
 #include "StateStore.h"
+#include <mutex>
 
 namespace network {
 

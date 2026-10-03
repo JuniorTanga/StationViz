@@ -1,6 +1,9 @@
 // StationViz/core/network/NetworkManager.cpp
 #include "NetworkManager.h"
+
+#include <algorithm>
 #include <chrono>
+#include <map>
 
 namespace network {
 
@@ -54,31 +57,92 @@ bool NetworkManager::start(const NetworkMap& map, const std::string& ifaceName) 
         sv_->subscribe(s.mac, s.appId, fields);
     }
 
-    // 5) Démarrer les sessions MMS + workers de reconnexion
+    // 5) Start one MMS session per endpoint, plus a single supervisor thread.
+    //
+    // The previous code called spawnMmsWorker() *before* inserting the context
+    // into the map, and the worker did `auto& ctx = mmsByIed_[ep.ied]` then
+    // dereferenced it. operator[] default-constructs, so that was a guaranteed
+    // null dereference on the first endpoint, followed by the map assignment
+    // destroying what the thread had captured.
     for (const auto& m : map.mms) {
-        std::vector<RcbConfig> rcbs;
-        if (auto it = map.rcbByIed.find(m.ied); it != map.rcbByIed.end()) rcbs = it->second;
-        auto ctx = std::make_unique<MmsCtx>();
+        auto ctx = std::make_shared<MmsCtx>();
         ctx->session = std::make_unique<MmsSession>(m.ied, m.ip, m.port, bus_, store_);
-        ctx->session->setMetaResolver([this](const std::string& ref){ return registry_.resolve(ref); });
-        ctx->rcbs = rcbs;
-        spawnMmsWorker(m, ctx->rcbs);
+        ctx->session->setMetaResolver(
+            [this](const std::string& ref){ return registry_.resolve(ref); });
+        if (auto it = map.rcbByIed.find(m.ied); it != map.rcbByIed.end())
+            ctx->rcbs = it->second;
         mmsByIed_[m.ied] = std::move(ctx);
     }
+
+    mmsSupervisor_ = std::thread([this]{ mmsSupervisorLoop(); });
 
     return true;
 }
 
+// Polls every IED, reconnecting with exponential backoff and (re)configuring
+// the report control blocks once a connection is up.
+void NetworkManager::mmsSupervisorLoop() {
+    const auto backoffMin = std::chrono::milliseconds(500);
+    std::map<std::string, std::chrono::milliseconds> backoff;
+
+    for (;;) {
+        bool stopping = false;
+        for (auto& kv : mmsByIed_) {
+            auto& ctx = kv.second;
+            if (ctx->stop.load()) { stopping = true; break; }
+
+            // Zero means "never backed off", i.e. use the base interval.
+            auto& wait = backoff[kv.first];
+            if (wait.count() == 0) wait = backoffMin;
+
+            if (!ctx->session->isUp()) {
+                bool up = false;
+                {
+                    std::lock_guard<std::mutex> lk(connMu_);
+                    up = ctx->session->connect(3000);
+                }
+                if (up) {
+                    // The report handler must already be installed before RptEna,
+                    // otherwise reports arriving in that window are dropped.
+                    ctx->session->enableReports(ctx->rcbs);
+                    wait = backoffMin;
+                } else {
+                    // Cap the doubling in one type: milliseconds throughout,
+                    // otherwise std::min(milliseconds, seconds) does not compile.
+                    auto next = wait * 2;
+                    if (next > std::chrono::milliseconds(5000)) next = std::chrono::milliseconds(5000);
+                    wait = next;
+                    if (interruptibleWait(next)) return;   // stop requested
+                    continue;
+                }
+            }
+        }
+        if (stopping) return;
+        if (interruptibleWait(std::chrono::milliseconds(1000))) return;
+    }
+}
+
+bool NetworkManager::interruptibleWait(std::chrono::milliseconds d) {
+    std::unique_lock<std::mutex> lk(sleepMu_);
+    for (auto& kv : mmsByIed_)
+        if (kv.second->stop.load()) return true;
+    sleepCv_.wait_for(lk, d, [this]{
+        for (auto& kv : mmsByIed_)
+            if (kv.second->stop.load()) return true;
+        return false;
+    });
+    return false;
+}
+
 void NetworkManager::stop() {
-    // stop replay
     stopReplay();
 
-    // stop MMS workers
+    for (auto& kv : mmsByIed_) kv.second->stop.store(true);
+    sleepCv_.notify_all();
+    if (mmsSupervisor_.joinable()) mmsSupervisor_.join();
     for (auto& kv : mmsByIed_) {
-        auto& ctx = kv.second;
-        ctx->stop.store(true);
-        if (ctx->th.joinable()) ctx->th.join();
-        if (ctx->session) ctx->session->disconnect();
+        std::lock_guard<std::mutex> lk(connMu_);
+        if (kv.second->session) kv.second->session->disconnect();
     }
     mmsByIed_.clear();
 
@@ -86,48 +150,18 @@ void NetworkManager::stop() {
     if (sv_)    { sv_->stop();    sv_.reset(); }
 }
 
-void NetworkManager::spawnMmsWorker(const EndpointMms& ep, const std::vector<RcbConfig>& rcbs) {
-    auto& ctx = mmsByIed_[ep.ied];
-    ctx->th = std::thread([this, ep, rcbs, ctxPtr=ctx.get()](){
-        const auto backoffMin = std::chrono::milliseconds(500);
-        const auto backoffMax = std::chrono::seconds(5);
-        auto backoff = backoffMin;
-
-        while (!ctxPtr->stop.load()) {
-            if (!ctxPtr->session->isUp()) {
-                if (ctxPtr->session->connect(3000)) {
-                    // (Re)configure RCB + GI
-                    ctxPtr->session->enableReports(rcbs);
-                    backoff = backoffMin; // reset
-                } else {
-                    std::this_thread::sleep_for(backoff);
-                    backoff = std::min(backoff * 2, backoffMax);
-                    continue;
-                }
-            }
-            std::this_thread::sleep_for(std::chrono::seconds(1));
-        }
-    });
-}
-
-bool NetworkManager::selectOperate(const std::string& ied, const std::string& ctlObjectRef, int64_t value, int timeoutMs) {
+bool NetworkManager::selectOperate(const std::string& ied,
+                                   const std::string& ctlObjectRef,
+                                   int64_t value, int timeoutMs) {
     auto it = mmsByIed_.find(ied);
     if (it == mmsByIed_.end()) return false;
-    auto& sess = it->second->session;
-    if (!sess || !sess->isUp()) return false;
-    return cmd_.operateSBOw(it->second->session->getConnection(), ctlObjectRef, value, timeoutMs);
-    );
+    auto& ctx = it->second;
+    if (!ctx->session || !ctx->session->isUp()) return false;
+    // Same lock the supervisor takes around connect(): libiec61850 does not
+    // serialise the request/response pair across threads by itself.
+    std::lock_guard<std::mutex> lk(connMu_);
+    return cmd_.operateSBOw(ctx->session->getConnection(), ctlObjectRef, value, timeoutMs);
 }
-
-// Pour ne pas exposer les entrailles de MmsSession, on peut surcharger MmsSession
-// avec un getter 'IedConnection native()' si nécessaire.
-// Ici, on modifie plutôt MmsSession (ajoute getConnection()):
-
-// ==> À AJOUTER dans MmsSession.h (public):
-// IedConnection getConnection() const { return con_; }
-
-// ==> Puis on appelle:
-bool NetworkManager::selectOperate(const std::string& ied, const std::string& ctlObjectRef, int64_t value, int timeoutMs);
 
 std::function<std::optional<TagId>(const std::string&)> NetworkManager::resolver() const {
     return [this](const std::string& ref){ return registry_.resolve(ref); };

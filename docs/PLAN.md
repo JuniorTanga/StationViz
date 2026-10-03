@@ -688,30 +688,94 @@ P0 crashes and UB, then the layering inversion, then `ReportControl`, then names
 non-zero where they should be.** Design in §4: structure into core, pixels into the UI, drop Boost,
 explicit topology classes, deterministic IDs, typed API.
 
-### Phase 3: the simulator
-Since there is no hardware, the simulator is the test rig and must be **SCD-driven** so it
-exercises the real import path. Build N simulated IEDs on loopback MMS with reports, plus GOOSE
-publishing and an SV stream, generated from our own fixtures. This is what makes the full FAT loop
-verifiable and is the strongest thesis demo. Keep it a separate target that never ships in the app.
-Uses libiec61850 `examples/server_example_goose`, `server_example_control`,
-`iec61850_9_2_LE_example`, `sv_publisher` as references.
+### Phase 4: `networkLib` now builds (was never buildable)
 
-### Phase 4: make `networkLib` real
-**Gate: 17 compile errors fixed, GOOSE receiving, SV decoding from SCL types, control with
-`CommandTermination`.** Linkage, threading, then reports, GOOSE, SV, control, per §5.
-**Hard dependency on the `DataTypeTemplates` decision from Phase 1** for SV.
+`networkLib` is in the build and compiles clean under `-Wall -Wextra`, linked against libiec61850
+1.5.1 as a subproject.
 
-### Phase 5: UI to the full FAT loop
-**Gate: the two new tabs work and the SLD shows live state.** Split `AppContext`, move structure into
-`sldLib`, convert to `qt_add_qml_module` and delete `qml.qrc`, fix the Theme singleton, collapse the
-palettes, replace the three non-virtualised views, fix `SldView` performance and the render-thread
-atlas, then build the COMMUNICATION and TESTS tabs plus the report generator.
+**Linkage.** `find_library` was commented out, so `${IEC61850_LIB}` expanded to nothing, and
+`IEC61850_INCLUDE_DIR` named 1 of the 11 directories actually needed. Fixed by consuming it as a
+subproject and naming the include directories explicitly, because libiec61850 sets its include path
+with a directory-scoped `include_directories()` that cannot reach a sibling target. `BUILD_EXAMPLES`
+is forced off (it defaults ON upstream and drags in ~25 binaries plus a `Findsqlite` lookup). The HAL
+lives at `hal/inc`, not `src/hal/inc`.
 
-### Phase 6: report generation and polish
-HTML report with pass/fail, evidence and diagnostics. Then cross-compile to Windows/MinGW, noting
-that libiec61850 there needs Npcap for GOOSE or GOOSE/SV compile out entirely.
+**Compile errors: 17 -> 0.**
 
----
+- `CommandEngine` had four consecutive wrong libiec61850 signatures in 49 lines, written against a
+  1.4-era API: swapped `ControlObjectClient_create(ref, con)` args, `setOrigin(self, 1, 1)` instead
+  of `(ident, cat)`, `selectWithValue` treated as taking an error out-param and a timeout, `operate`
+  given a timeout where it expects an operate timestamp, and `cancel` given an extra argument. All
+  corrected against the real header.
+- **The control value type is now read from the IED** via `ControlObjectClient_getCtlValType`. It was
+  always an integer, which a real IED rejects: an SPCSO needs a boolean. The control model is also
+  detected, so a DIRECT control no longer fails by always sending SBOw, which was the single most
+  common control interop failure. `cancel` now runs only on the failure path, since a successful
+  operate has already consumed the select.
+- A structure-typed control (APC) returns null rather than a malformed value: libiec61850 exposes no
+  accessor for the control object's `MmsVariableSpecification`, so `MmsValue_newStructure()` cannot
+  be called correctly. Failing loudly beats sending a bad command to a breaker.
+- `MmsValue_getOctetString` was removed in 1.5; replaced with `MmsValue_getOctetStringBuffer` plus a
+  copy.
+- `DatasetResolver` called `getIed`/`getLogicalDevice`, which never existed. Now uses `findIED` and a
+  new `SclManager::findLogicalDevice`. Its DataSet reference used `LD0/LLN0.DS`, which is not the `$`
+  form MMS expects.
+- `control.h` was included from `inc_private`, which pulls in `mms_server_libinternal.h` and is not
+  part of the client API. Removed; `iec61850_client.h` declares everything needed.
+- Missing `<mutex>` in `StateStore.cpp` and `TagRegistry.cpp`.
+
+**Networking was dead on real data, and it is now not.**
+
+- `parseMac` split on `':'` while **every SCD in the repo writes dashes** (`01-0C-CD-01-00-01`), so it
+  returned nullopt for 100% of real files and `start()` ignored the result. Now accepts `:`, `-` and
+  `.` in either case, and rejects trailing junk.
+- **APPID is hex.** `4001` decimal is 16385 and any value with a letter parsed to 0, so incoming
+  GOOSE was filtered on the wrong identifier and every frame was dropped. Now parsed as hex, which is
+  what VLAN-ID needs too. Real SCD values: `<P type="APPID">0001</P>` and `4001`, `<P type="VLAN-ID">000</P>`.
+- **RCBs were fabricated from GOOSE control blocks.** A GSEControl has nothing to do with reporting, so
+  every GOOSE endpoint invented an RCB (an IED with 5 GOOSE blocks and 3 real report controls produced
+  5 entries, 3 bogus, and missed the 2 real ones), and the invented reference matched nothing a server
+  exposes, so `getRCBValues` silently failed. RCBs now come from the SCL's `<ReportControl>` elements,
+  using the `rptID` the server actually reports.
+- **MMS object references were not MMS references.** `ObjectRefMapper` and `SclManager::fcdaToMmsRef`
+  both produced `LD1/XCBR1.Pos[ST]`, which no server resolves. Now the IEC 61850-7-2 form
+  `LdInst/LNName$FC$DO$DA` (`LD1/XCBR1$ST$Pos`). The duplicate implementation is deleted; one delegates.
+
+**Threading rewritten.** `spawnMmsWorker` did `auto& ctx = mmsByIed_[ep.ied]` **before** the caller
+inserted the context, then dereferenced it: `operator[]` default-constructs, so this was a guaranteed
+null dereference on the first MMS endpoint, followed by the map assignment destroying what the thread
+had captured. Also `ctx->th = std::thread(...)` terminates if the thread is joinable, so restart was
+impossible, and shutdown blocked up to 5 s **per IED in sequence** (30 IEDs = 150 s).
+
+Now: contexts inserted first and held by `shared_ptr`, **one supervisor thread for all IEDs** rather
+than one per IED (`IedConnection_create` is already thread mode, so the old design paid two threads per
+IED just to poll), an interruptible `condition_variable` wait so `stop()` is immediate, and a mutex
+serialising every `IedConnection` use so a `connect()` in the supervisor cannot race an `operate()`
+from the GUI. `MmsSession::mu_` was declared and never locked.
+
+**libpcap is now optional.** CMake 3.28 here has no `FindPCAP.cmake`, so `find_package(PCAP)` could
+only warn. `/usr/include/pcap.h` does not exist. Pcap detection now uses `pkg-config`, and
+`PcapReplayer` plus the two libpcap-only functions of `InterfaceManager` compile to stubs without it.
+GOOSE and SV on Linux use libiec61850's own `AF_PACKET` HAL and never needed libpcap, so this removes
+a blocker rather than a feature. Its replay timing is also fixed: it measured from the first packet, so
+each wait grew cumulatively and replay was asymptotically slow.
+
+**Tests:** new `tests/network_smoke`, 4 CTest cases. Most defects here were silent, so the parse and
+map contracts are pinned: MAC with dashes, APPID as hex, RCB reference shape, and MMS member form.
+
+One bug worth recording because I introduced it during this pass and the test caught it:
+`sm.model() ? sm.model()->ieds : std::vector<scl::IED>{}` is a **prvalue**, so the loop iterated a
+*copy* of the IED vector and pointer-identity lookup could never match. Every reference came out as
+`/LLN0$BR$...` with no device prefix. Fixed by binding a const reference.
+
+`ctest`: **69/69 pass.**
+
+**Still not done in this layer** (Phase 4 remainder, all needing a simulator or real hardware):
+GOOSE `goCbRef` is still hardcoded `""`, which matches no frame because libiec61850 compares
+`goCBRefLen` with the frame length; SV field specs are still fabricated 4-byte UINT32 rather than read
+from the SCL (blocked on `DataTypeTemplates`); the report handler is installed after `RptEna`, `rptId`
+is passed as `nullptr`, and there is no `EntryID` resync; and `CommandTermination` is still not
+handled, so a control result cannot distinguish "accepted" from "acted".
 
 ## 9. Honest Assessment of Scale
 
@@ -756,6 +820,13 @@ Append entries here as phases complete. Newest at the bottom.
   `ctest`: 44/44.
 - **2026-10-02** Phase A done (layering inversion, MMS address sources, `CNAddress::ss`).
   `ctest`: 53/53.
+- **2026-10-03** **networkLib builds for the first time.** 17 compile errors to 0, linked against
+  libiec61850 as a subproject. GOOSE was subscribed with an empty reference so it could never match,
+  APPID was parsed as decimal though it is hex, MAC parsing rejected every SCD in the repo, RCBs were
+  fabricated from GOOSE control blocks, and MMS object references were not MMS references. All fixed.
+  The MMS worker had a guaranteed null dereference on the first endpoint and a 150 s shutdown; now one
+  supervisor thread, interruptible. libpcap made optional so the build stops depending on it.
+  `ctest`: 69/69.
 - **2026-10-03** **sldLib rewritten from scratch.** The engine was inferring bay structure from a
   graph that had already had it flattened away; it is now derived from the SCL Bay structure
   directly. Deleted the Boost graph, the heuristics config and the whole inference pipeline. All 3
@@ -969,6 +1040,13 @@ Append entries here as phases complete. Newest at the bottom.
   `ctest`: 44/44.
 - **2026-10-02** Phase A done (layering inversion, MMS address sources, `CNAddress::ss`).
   `ctest`: 53/53.
+- **2026-10-03** **networkLib builds for the first time.** 17 compile errors to 0, linked against
+  libiec61850 as a subproject. GOOSE was subscribed with an empty reference so it could never match,
+  APPID was parsed as decimal though it is hex, MAC parsing rejected every SCD in the repo, RCBs were
+  fabricated from GOOSE control blocks, and MMS object references were not MMS references. All fixed.
+  The MMS worker had a guaranteed null dereference on the first endpoint and a 150 s shutdown; now one
+  supervisor thread, interruptible. libpcap made optional so the build stops depending on it.
+  `ctest`: 69/69.
 - **2026-10-03** **sldLib rewritten from scratch.** The engine was inferring bay structure from a
   graph that had already had it flattened away; it is now derived from the SCL Bay structure
   directly. Deleted the Boost graph, the heuristics config and the whole inference pipeline. All 3

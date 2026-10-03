@@ -53,6 +53,11 @@ public:
                                  const std::string& ldInst,
                                  const std::string& dsName) const;
 
+    // LDevice of an IED by @inst, searching both IED/LDevice and
+    // IED/AccessPoint/Server/LDevice. nullptr when absent.
+    const LogicalDevice* findLogicalDevice(const IED& ied,
+                                            const std::string& ldInst) const;
+
     // Construit "LD/LN.DO(.DA)[FC]" pour un FCDA (helper pour libIEC61850)
     static std::string fcdaToMmsRef(const std::string& ldInst, const FcdaRef& f);
 

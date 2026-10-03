@@ -10,10 +10,18 @@
 #include "CommandEngine.h"
 #include "PcapReplayer.h"
 
+#include <atomic>
+#include <chrono>
+#include <condition_variable>
+#include <memory>
+#include <mutex>
 #include <string>
+#include <thread>
 #include <unordered_map>
 #include <thread>
 #include <atomic>
+#include <condition_variable>
+#include <mutex>
 #include <memory>
 
 namespace network {
@@ -44,9 +52,6 @@ public:
     void stopReplay();
 
 private:
-    void spawnMmsWorker(const EndpointMms& ep, const std::vector<RcbConfig>& rcbs);
-
-private:
     EventBus& bus_;
     StateStore& store_;
 
@@ -57,14 +62,35 @@ private:
     std::unique_ptr<SvEngine>    sv_;
     std::unique_ptr<PcapReplayer> replayer_;
 
-    // MMS sessions & threads
+    // MMS sessions.
+    //
+    // Held by shared_ptr and owned by a single supervisor thread rather than by
+    // one thread per IED: IedConnection_create is already thread mode, so the
+    // old design paid two threads per IED just to poll and reconnect. The
+    // shared_ptr also fixes a null dereference, see NetworkManager.cpp.
+    // MmsSession holds reference members, a mutex and an atomic, so it is not
+    // assignable; it is held by pointer rather than by value.
     struct MmsCtx {
         std::unique_ptr<MmsSession> session;
-        std::thread th;
         std::atomic<bool> stop{false};
         std::vector<RcbConfig> rcbs;
     };
-    std::unordered_map<std::string, std::unique_ptr<MmsCtx>> mmsByIed_; // key = IED
+    std::unordered_map<std::string, std::shared_ptr<MmsCtx>> mmsByIed_; // key = IED
+
+    // Serialises every use of an IedConnection. libiec61850 guards individual
+    // structures but not the request/response pair, so a connect() in the
+    // supervisor racing an operate() from the GUI could corrupt the association.
+    mutable std::mutex connMu_;
+
+    // One supervisor for all IEDs, woken by cv_ so stop() is immediate rather
+    // than blocking for up to one backoff interval per IED in turn.
+    std::thread mmsSupervisor_;
+    std::mutex sleepMu_;
+    std::condition_variable sleepCv_;
+
+    void mmsSupervisorLoop();
+    // Waits up to `d`, returning false if stop was requested.
+    bool interruptibleWait(std::chrono::milliseconds d);
 
     // iface
     std::string iface_;

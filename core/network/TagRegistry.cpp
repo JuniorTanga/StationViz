@@ -1,6 +1,7 @@
 // StationViz/core/network/TagRegistry.cpp
 #include "TagRegistry.h"
 #include <regex>
+#include <mutex>
 
 namespace network {
 

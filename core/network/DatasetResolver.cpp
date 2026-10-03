@@ -9,11 +9,11 @@ DatasetResolver::resolveLn0(const scl::SclManager& sm,
                             const std::string& ldInst,
                             const std::string& dsName)
 {
-    auto* iedPtr = sm.getIed(ied);
-    if (!iedPtr) return std::nullopt;
+    auto iedRes = sm.findIED(ied);
+    if (!iedRes) return std::nullopt;
+    const scl::IED* iedPtr = iedRes.value();
 
-    // Cherche LD par ldInst
-    const auto* ld = sm.getLogicalDevice(ied, ldInst);
+    const auto* ld = sm.findLogicalDevice(*iedPtr, ldInst);
     if (!ld) return std::nullopt;
 
     // Dans ln0.datasets cherche dsName
@@ -21,10 +21,15 @@ DatasetResolver::resolveLn0(const scl::SclManager& sm,
     for (const auto& ds : ln0.datasets) {
         if (ds.name == dsName) {
             ResolvedDS out;
-            out.dataSetRef = ldInst + std::string("/LLN0.") + ds.name;
+            // MMS wants the '$' form: "LD0/LLN0$DS1". The old "/" and "."
+            // spelling was never accepted by a server.
+            out.dataSetRef = ldInst + "/LLN0$" + ds.name;
             out.members.reserve(ds.members.size());
             for (const auto& fcda : ds.members) {
-                out.members.push_back(ObjectRefMapper::toMmsRef(ldInst, fcda));
+                // A member may name a different LD; ObjectRefMapper takes the
+                // FCDA's own ldInst when it has one.
+                const std::string& mld = fcda.ldInst.empty() ? ldInst : fcda.ldInst;
+                out.members.push_back(ObjectRefMapper::toMmsRef(mld, fcda));
             }
             return out;
         }

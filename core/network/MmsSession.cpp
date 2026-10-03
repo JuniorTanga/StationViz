@@ -139,10 +139,13 @@ TagValue MmsSession::mmsToTagValue(MmsValue* v) {
             return TagValue{ Timestamp{ /*approx*/ 0 } };
         }
         case MMS_OCTET_STRING: {
+            // MmsValue_getOctetString was removed in libiec61850 1.5: the buffer
+            // is now exposed directly and must be copied by the caller.
+            const int size = MmsValue_getOctetStringSize(v);
             ByteString bs;
-            int size = MmsValue_getOctetStringSize(v);
             bs.resize(size);
-            MmsValue_getOctetString(v, bs.data(), size);
+            const uint8_t* buf = MmsValue_getOctetStringBuffer(v);
+            if (buf && size > 0) memcpy(bs.data(), buf, static_cast<size_t>(size));
             return TagValue{ std::move(bs) };
         }
         case MMS_BIT_STRING: {

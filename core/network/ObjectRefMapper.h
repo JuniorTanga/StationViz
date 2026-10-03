@@ -2,12 +2,12 @@
 #pragma once
 #include <string>
 #include "NetworkTypes.h"
-#include "../scl/SclTypes.h" // pour scl::FcdaRef
+#include "../scl/SclTypes.h"   // scl::FcdaRef
 
 namespace network {
 
-// Génère l'object reference MMS "LD/LN.item(component)[FC]"
-// cf. libIEC61850: IedConnection_getDataSetDirectory docs.
+// MMS object reference for an FCDA, delegating to sclLib so there is a single
+// implementation: IEC 61850-7-2 spells it LdInst/LNName$FC$DO$DA.
 class ObjectRefMapper {
 public:
     static std::string toMmsRef(const std::string& ldInst, const scl::FcdaRef& f);
